@@ -1,4 +1,5 @@
 import fs from "node:fs/promises";
+import { constants as fsConstants } from "node:fs";
 import path from "node:path";
 import { spawn } from "node:child_process";
 import { logInfo } from "./utils.js";
@@ -6,6 +7,15 @@ import { logInfo } from "./utils.js";
 async function pathExists(p) {
   try {
     await fs.access(p);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function executableExists(p) {
+  try {
+    await fs.access(p, fsConstants.X_OK);
     return true;
   } catch {
     return false;
@@ -22,8 +32,10 @@ export async function buildSubtrees({
   max,
   verbose,
 }) {
-  if (!(await pathExists(buildSubtreesBin))) {
-    const message = `Subtree builder not found at ${buildSubtreesBin}`;
+  const builderIsUsable = await executableExists(buildSubtreesBin);
+
+  if (!builderIsUsable) {
+    const message = `Subtree builder not found or not executable at ${buildSubtreesBin}`;
     if (buildSubtreesBinWasProvided) {
       throw new Error(`${message}\n  - To disable subtree generation, pass --no-build-subtrees\n  - To specify a script, pass --build-subtrees-bin /path/to/crs_build_subtrees.sh`);
     }

@@ -149,4 +149,4 @@ Two helper scripts are included:
 - `scripts/generate-overview.sh`: Generates a simple `project-overview.txt` with a file listing and short previews.
 - `scripts/crs_build_subtrees.sh`: Materializes `gteNN` subtrees using a frequency TSV.
 
-Both scripts are invoked automatically when present (the subtree builder defaults to `<repo-root>/scripts/crs_build_subtrees.sh`; if missing, subtree generation is skipped with a warning), but can also be run directly.
+Both scripts are invoked automatically when present (the subtree builder defaults to `<repo-root>/scripts/crs_build_subtrees.sh`; if missing or not executable, subtree generation is skipped with a warning), but can also be run directly. Ensure the subtree builder is executable (`chmod +x scripts/crs_build_subtrees.sh`) or provide an alternate path via `--build-subtrees-bin`; otherwise, re-run with `--no-build-subtrees` to silence warnings.
