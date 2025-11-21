@@ -6,7 +6,7 @@ import dotenv from "dotenv";
 import OpenAI from "openai";
 import { loadConfig, usage } from "../src/config.js";
 import { resolveOverview } from "../src/overview.js";
-import { listProjectFiles, logInfo } from "../src/utils.js";
+import { listProjectFiles, logInfo, padIndex } from "../src/utils.js";
 import { runMeeting } from "../src/meeting.js";
 import { aggregateDecisions, writeAggregationOutputs } from "../src/aggregate.js";
 import { buildSubtrees, generateBucketOverviews } from "../src/subtrees.js";
@@ -68,6 +68,12 @@ async function main() {
   const decisionsDir = path.join(outDir, "decisions");
   const errorsDir = path.join(outDir, "errors");
 
+  await Promise.all([
+    fs.mkdir(minutesDir, { recursive: true }),
+    fs.mkdir(decisionsDir, { recursive: true }),
+    fs.mkdir(errorsDir, { recursive: true }),
+  ]);
+
   const promptTextResolved = promptText || await fs.readFile(promptFile, "utf8");
   const promptPath = promptFile || "inline-prompt";
 
@@ -79,16 +85,14 @@ async function main() {
 
   const client = new OpenAI({ apiKey });
 
-  const tasks = [];
+  const workerCount = Math.min(workers, sampleSize);
+  const padWidth = Math.max(3, String(sampleSize).length);
   let nextIndex = 1;
-  let active = 0;
   let errors = 0;
 
-  const enqueue = () => {
-    while (active < workers && nextIndex <= sampleSize) {
-      const index = nextIndex++;
-      active++;
-      const task = runMeeting({
+  async function runMeetingIndex(index) {
+    try {
+      await runMeeting({
         client,
         model,
         curators,
@@ -102,19 +106,25 @@ async function main() {
         decisionsDir,
         errorsDir,
         verbose,
-      }).catch((err) => {
-        errors++;
-        console.error(`packet-select: meeting ${index} failed: ${err.message}`);
-      }).finally(() => {
-        active--;
-        enqueue();
       });
-      tasks.push(task);
+    } catch (err) {
+      errors++;
+      const message = err?.message || String(err);
+      console.error(`packet-select: meeting ${index} failed: ${message}`);
+      const errorPath = path.join(errorsDir, `meeting-${padIndex(index, padWidth)}.error.log`);
+      await fs.writeFile(errorPath, `${err?.stack || message}\n`, "utf8");
     }
-  };
+  }
 
-  enqueue();
-  await Promise.all(tasks);
+  async function workerLoop() {
+    while (true) {
+      const index = nextIndex++;
+      if (index > sampleSize) return;
+      await runMeetingIndex(index);
+    }
+  }
+
+  await Promise.all(Array.from({ length: workerCount }, () => workerLoop()));
 
   if (errors === sampleSize) {
     console.error("packet-select: All meetings failed");
@@ -122,6 +132,7 @@ async function main() {
   }
 
   const { votes, records, maxCount, frequencyTsv, decisionsFiles } = await aggregateDecisions({ decisionsDir, fileSet, sampleSize });
+  const completedMeetings = decisionsFiles.length;
   const { frequencyPath } = await writeAggregationOutputs({
     outDir,
     votes,
@@ -138,6 +149,8 @@ async function main() {
       promptPath,
       totalFiles: fileSet.size,
       decisionsFiles,
+      completedMeetings,
+      failedMeetings: errors,
     },
   });
 
@@ -164,7 +177,11 @@ async function main() {
     }
   }
 
-  console.error("packet-select: complete");
+  if (errors > 0) {
+    console.error(`packet-select: complete with ${completedMeetings}/${sampleSize} meetings succeeded (${errors} failed)`);
+  } else {
+    console.error(`packet-select: complete (${completedMeetings}/${sampleSize} meetings succeeded)`);
+  }
 }
 
 main().catch((error) => {

@@ -19,7 +19,7 @@ export async function aggregateDecisions({ decisionsDir, fileSet, sampleSize }) 
       const rel = normalizeRelativePath(entry.path);
       if (!rel) continue;
       if (!fileSet.has(rel)) {
-        logWarn(`Aggregation skipping unknown path: ${rel}`);
+        logWarn(`Aggregation skipping unknown path (decision ignored for frequency): ${rel}`);
         continue;
       }
       if (!votes[rel]) {
@@ -58,6 +58,8 @@ export async function writeAggregationOutputs({ outDir, votes, frequencyTsv, max
     totalFiles: meta.totalFiles,
     maxCount,
     uniqueFiles: records.length,
+    completedMeetings: meta.completedMeetings ?? meta.decisionsFiles?.length ?? 0,
+    failedMeetings: meta.failedMeetings ?? Math.max(0, (meta.sampleSize || 0) - (meta.completedMeetings ?? meta.decisionsFiles?.length ?? 0)),
     createdAt: new Date().toISOString(),
     frequencyTsv: frequencyPath,
     votesJson: votesPath,
