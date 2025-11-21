@@ -58,6 +58,7 @@ async function main() {
     noBucketOverviews,
     apiKey,
     verbose,
+    reasoningEffort,
   } = config;
 
   const buildSubtreesBin = resolveBuildSubtreesBin(configuredBuildSubtreesBin);
@@ -106,6 +107,7 @@ async function main() {
         decisionsDir,
         errorsDir,
         verbose,
+        reasoningEffort,
       });
     } catch (err) {
       errors++;
@@ -151,6 +153,7 @@ async function main() {
       decisionsFiles,
       completedMeetings,
       failedMeetings: errors,
+      reasoningEffort,
     },
   });
 

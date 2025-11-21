@@ -9,6 +9,8 @@ function required(value, message) {
 }
 
 export function loadConfig(argv) {
+  const ALLOWED_REASONING_EFFORTS = ["minimal", "low", "medium", "high", "auto"];
+
   const {
     values,
   } = parseArgs({
@@ -29,6 +31,7 @@ export function loadConfig(argv) {
       "no-bucket-overviews": { type: "boolean" },
       "no-overview-subtrees": { type: "boolean" },
       "api-key": { type: "string" },
+      "reasoning-effort": { type: "string" },
       verbose: { type: "boolean" },
       help: { type: "boolean", short: "h" },
     },
@@ -54,6 +57,7 @@ export function loadConfig(argv) {
   const noBucketOverviews = Boolean(values["no-bucket-overviews"] || values["no-overview-subtrees"]);
   const apiKey = values["api-key"] || process.env.OPENAI_API_KEY || "";
   const verbose = Boolean(values.verbose);
+  const reasoningEffort = values["reasoning-effort"] || "high";
 
   required(srcRoot, "--src-root is required");
   if (!promptText && !promptFile) {
@@ -72,6 +76,9 @@ export function loadConfig(argv) {
   if (!apiKey) {
     throw new Error("An OpenAI API key is required via --api-key or OPENAI_API_KEY");
   }
+  if (!ALLOWED_REASONING_EFFORTS.includes(reasoningEffort)) {
+    throw new Error(`Invalid --reasoning-effort "${reasoningEffort}". Expected one of: ${ALLOWED_REASONING_EFFORTS.join(", ")}.`);
+  }
 
   return {
     help: false,
@@ -89,6 +96,7 @@ export function loadConfig(argv) {
     noBucketOverviews,
     apiKey,
     verbose,
+    reasoningEffort,
   };
 }
 
@@ -99,5 +107,6 @@ export function usage() {
   --curators "Name1, Name2" \n\
   [--sample-size <int>] [--workers <int>] [--model <id>] \n\
   [--out-dir <dir>] [--overview-file <file>] [--build-subtrees-bin <path>] \n\
-  [--no-build-subtrees] [--no-bucket-overviews] [--api-key <key>] [--verbose]`;
+  [--no-build-subtrees] [--no-bucket-overviews] [--api-key <key>] [--verbose] \n\
+  [--reasoning-effort <minimal|low|medium|high|auto>]`;
 }
