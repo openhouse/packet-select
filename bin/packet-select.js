@@ -15,6 +15,16 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const repoRoot = path.resolve(__dirname, "..");
 
+function resolveBuildSubtreesBin(buildSubtreesBin) {
+  if (!buildSubtreesBin) {
+    return path.join(repoRoot, "scripts", "crs_build_subtrees.sh");
+  }
+  if (path.isAbsolute(buildSubtreesBin)) {
+    return buildSubtreesBin;
+  }
+  return path.join(repoRoot, buildSubtreesBin);
+}
+
 // Load .env from the packet-select repo root if present
 dotenv.config({ path: path.join(repoRoot, ".env") });
 
@@ -43,12 +53,15 @@ async function main() {
     model,
     outDir,
     overviewFile,
-    buildSubtreesBin,
+    buildSubtreesBin: configuredBuildSubtreesBin,
     noBuildSubtrees,
     noBucketOverviews,
     apiKey,
     verbose,
   } = config;
+
+  const buildSubtreesBin = resolveBuildSubtreesBin(configuredBuildSubtreesBin);
+  const buildSubtreesBinWasProvided = Boolean(configuredBuildSubtreesBin);
 
   await fs.mkdir(outDir, { recursive: true });
   const minutesDir = path.join(outDir, "minutes");
@@ -134,11 +147,12 @@ async function main() {
       outDir,
       frequencyPath,
       buildSubtreesBin,
+      buildSubtreesBinWasProvided,
       min: 1,
       max: maxCount,
       verbose,
     });
-    if (!noBucketOverviews) {
+    if (subtreesRoot && !noBucketOverviews) {
       const overviewScript = overviewPath && overviewPath.endsWith("project-overview.txt")
         ? path.join(path.dirname(overviewPath), "scripts", "generate-overview.sh")
         : path.resolve("scripts", "generate-overview.sh");

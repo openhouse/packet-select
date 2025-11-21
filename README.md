@@ -29,7 +29,7 @@ Key flags:
 - `--workers`: Max meetings to run concurrently (default 1).
 - `--model`: OpenAI model (default `gpt-4.1-mini`).
 - `--overview-file`: Provide an existing overview instead of generating one.
-- `--build-subtrees-bin`: Path to subtree builder script (default `./scripts/crs_build_subtrees.sh`).
+- `--build-subtrees-bin`: Path to subtree builder script (default `<repo-root>/scripts/crs_build_subtrees.sh`; relative paths are resolved from the repo root).
 - `--no-build-subtrees`: Skip subtree generation.
 - `--no-bucket-overviews`: Skip generating `project-overview.txt` inside buckets.
 - `--api-key`: OpenAI API key (or set `OPENAI_API_KEY`).
@@ -130,6 +130,8 @@ Alternatively, you can call the included wrapper script from any directory and l
   --out-dir "$(pwd)"
 ```
 
+The wrapper defaults to the subtree builder bundled in the repo. If you run `packet-select` directly from another working directory, relative `--build-subtrees-bin` paths are still resolved from the repo root.
+
 ## What it produces
 
 A typical run writes files into `--out-dir`:
@@ -147,4 +149,4 @@ Two helper scripts are included:
 - `scripts/generate-overview.sh`: Generates a simple `project-overview.txt` with a file listing and short previews.
 - `scripts/crs_build_subtrees.sh`: Materializes `gteNN` subtrees using a frequency TSV.
 
-Both scripts are invoked automatically when present, but can also be run directly.
+Both scripts are invoked automatically when present (the subtree builder defaults to `<repo-root>/scripts/crs_build_subtrees.sh`; if missing, subtree generation is skipped with a warning), but can also be run directly.
