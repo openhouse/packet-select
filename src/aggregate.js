@@ -60,6 +60,7 @@ export async function writeAggregationOutputs({ outDir, votes, frequencyTsv, max
     uniqueFiles: records.length,
     completedMeetings: meta.completedMeetings ?? meta.decisionsFiles?.length ?? 0,
     failedMeetings: meta.failedMeetings ?? Math.max(0, (meta.sampleSize || 0) - (meta.completedMeetings ?? meta.decisionsFiles?.length ?? 0)),
+    reasoningEffort: meta.reasoningEffort,
     createdAt: new Date().toISOString(),
     frequencyTsv: frequencyPath,
     votesJson: votesPath,

@@ -42,15 +42,20 @@ export async function runMeeting({
   decisionsDir,
   errorsDir,
   verbose,
+  reasoningEffort,
 }) {
   const messages = buildMessages({ curators, promptText, overviewText, srcRoot, sampleSize, runIndex, fileCount: fileSet.size });
   logInfo(verbose, `Starting meeting ${runIndex}/${sampleSize}`);
+
+  const isGpt5 = typeof model === "string" && model.startsWith("gpt-5");
+  const shouldSendReasoningEffort = isGpt5 && reasoningEffort && reasoningEffort !== "auto";
 
   const response = await client.chat.completions.create({
     model,
     messages,
     temperature: 0.6,
     response_format: { type: "json_object" },
+    ...(shouldSendReasoningEffort ? { reasoning_effort: reasoningEffort } : {}),
   });
 
   const content = response.choices?.[0]?.message?.content || "";

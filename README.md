@@ -17,6 +17,7 @@ packet-select \
   --curators "Curator One, Curator Two" \
   --sample-size 4 \
   --model gpt-4.1-mini \
+  --reasoning-effort high \
   --out-dir ./packet-select-out
 ```
 
@@ -32,6 +33,7 @@ Key flags:
 - `--build-subtrees-bin`: Path to subtree builder script (default `<repo-root>/scripts/crs_build_subtrees.sh`; relative paths are resolved from the repo root).
 - `--no-build-subtrees`: Skip subtree generation.
 - `--no-bucket-overviews`: Skip generating `project-overview.txt` inside buckets.
+- `--reasoning-effort`: Reasoning effort for GPT-5 models (minimal, low, medium, high, auto). Default is `high`; ignored for non-GPT-5 models.
 - `--api-key`: OpenAI API key (or set `OPENAI_API_KEY`).
 - `--verbose`: Print progress logs.
 
