@@ -35,6 +35,87 @@ Key flags:
 - `--api-key`: OpenAI API key (or set `OPENAI_API_KEY`).
 - `--verbose`: Print progress logs.
 
+## Configuring the OpenAI API key
+
+`packet-select` looks for an OpenAI API key in one of two places:
+
+- `--api-key` on the command line, or
+- the `OPENAI_API_KEY` environment variable.
+
+You can set the environment variable directly:
+
+```bash
+export OPENAI_API_KEY=sk-your-openai-api-key
+```
+
+Or use the provided `.env.example` file:
+
+```bash
+cp .env.example .env
+$EDITOR .env  # edit OPENAI_API_KEY
+set -a; source .env; set +a
+```
+
+After that, run `packet-select` (or `node ./bin/packet-select.js`) and the tool will use the key from the environment.
+
+## Example: running against a CRS tree
+
+Suppose your CRS project lives here:
+
+```bash
+/Users/jburkart/Library/Mobile Documents/com~apple~CloudDocs/Teams/CRS
+```
+
+and you want the `packet-select` output to be written under a date-specific working directory, e.g.:
+
+```bash
+/Users/jburkart/Library/Mobile Documents/com~apple~CloudDocs/Teams/CRS/2025-11-21/crs-subtrees
+```
+
+One way to run `packet-select` is:
+
+```bash
+# From the packet-select repo (once):
+npm install
+
+# Configure your API key (once per shell):
+cp .env.example .env
+$EDITOR .env  # set OPENAI_API_KEY
+set -a; source .env; set +a
+
+# From your CRS working directory:
+cd "/Users/jburkart/Library/Mobile Documents/com~apple~CloudDocs/Teams/CRS/2025-11-21/crs-subtrees"
+
+# Run packet-select against the CRS root, writing outputs into the current directory
+node /path/to/packet-select/bin/packet-select.js \
+  --src-root "/Users/jburkart/Library/Mobile Documents/com~apple~CloudDocs/Teams/CRS" \
+  --prompt-file "/path/to/your/crs-brief.txt" \
+  --curators "Curator One, Curator Two" \
+  --sample-size 8 \
+  --workers 4 \
+  --model gpt-4.1-mini \
+  --out-dir "$(pwd)"
+```
+
+This will:
+
+- Treat `/Users/jburkart/Library/Mobile Documents/com~apple~CloudDocs/Teams/CRS` as the project tree to curate.
+- Write all outputs (minutes, decisions, `data/file-frequency.tsv`, `run.json`, and `subtrees/gteNN/...`) under the current `crs-subtrees` directory.
+- Use the OpenAI API key from `OPENAI_API_KEY` in your environment.
+
+If you have `packet-select` on your PATH (e.g. via `npm link`), you can replace the `node /path/to/packet-select/bin/packet-select.js` line with:
+
+```bash
+packet-select \
+  --src-root "/Users/jburkart/Library/Mobile Documents/com~apple~CloudDocs/Teams/CRS" \
+  --prompt-file "/path/to/your/crs-brief.txt" \
+  --curators "Curator One, Curator Two" \
+  --sample-size 8 \
+  --workers 4 \
+  --model gpt-4.1-mini \
+  --out-dir "$(pwd)"
+```
+
 ## What it produces
 
 A typical run writes files into `--out-dir`:
