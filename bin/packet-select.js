@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 import fs from "node:fs/promises";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
+import dotenv from "dotenv";
 import OpenAI from "openai";
 import { loadConfig, usage } from "../src/config.js";
 import { resolveOverview } from "../src/overview.js";
@@ -8,6 +10,13 @@ import { listProjectFiles, logInfo } from "../src/utils.js";
 import { runMeeting } from "../src/meeting.js";
 import { aggregateDecisions, writeAggregationOutputs } from "../src/aggregate.js";
 import { buildSubtrees, generateBucketOverviews } from "../src/subtrees.js";
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+const repoRoot = path.resolve(__dirname, "..");
+
+// Load .env from the packet-select repo root if present
+dotenv.config({ path: path.join(repoRoot, ".env") });
 
 async function main() {
   let config;
