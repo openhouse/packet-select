@@ -53,7 +53,7 @@ export async function runMeeting({
   const response = await client.chat.completions.create({
     model,
     messages,
-    temperature: 0.6,
+    temperature: 1,
     response_format: { type: "json_object" },
     ...(shouldSendReasoningEffort ? { reasoning_effort: reasoningEffort } : {}),
   });
