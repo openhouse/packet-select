@@ -1,0 +1,67 @@
+import fs from "node:fs/promises";
+import path from "node:path";
+import { spawn } from "node:child_process";
+import { logInfo } from "./utils.js";
+
+async function pathExists(p) {
+  try {
+    await fs.access(p);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export async function buildSubtrees({ srcRoot, outDir, frequencyPath, buildSubtreesBin, min, max, verbose }) {
+  if (!(await pathExists(buildSubtreesBin))) {
+    throw new Error(`Subtree builder not found at ${buildSubtreesBin}`);
+  }
+  if (!(await pathExists(frequencyPath))) {
+    throw new Error(`Frequency TSV missing at ${frequencyPath}`);
+  }
+  const destRoot = path.join(outDir, "subtrees");
+  await fs.mkdir(destRoot, { recursive: true });
+  const args = [
+    "--src-root", srcRoot,
+    "--dest-root", destRoot,
+    "--input", frequencyPath,
+    "--min", String(min),
+    "--max", String(max),
+  ];
+  logInfo(verbose, `Running subtree builder: ${buildSubtreesBin} ${args.join(" ")}`);
+  await new Promise((resolve, reject) => {
+    const child = spawn(buildSubtreesBin, args, { stdio: "inherit" });
+    child.on("exit", (code) => {
+      if (code === 0) resolve();
+      else reject(new Error(`Subtree builder exited with ${code}`));
+    });
+    child.on("error", reject);
+  });
+  return destRoot;
+}
+
+export async function generateBucketOverviews({ subtreesRoot, overviewScriptPath, verbose }) {
+  if (!(await pathExists(subtreesRoot))) return [];
+  const entries = await fs.readdir(subtreesRoot, { withFileTypes: true });
+  const buckets = entries.filter((e) => e.isDirectory() && e.name.startsWith("gte"));
+  const generated = [];
+  for (const bucket of buckets) {
+    const bucketDir = path.join(subtreesRoot, bucket.name);
+    const scriptsDir = path.join(bucketDir, "scripts");
+    await fs.mkdir(scriptsDir, { recursive: true });
+    const destScript = path.join(scriptsDir, "generate-overview.sh");
+    await fs.copyFile(overviewScriptPath, destScript);
+    await fs.chmod(destScript, 0o755);
+    logInfo(verbose, `Generating overview for ${bucketDir}`);
+    await new Promise((resolve, reject) => {
+      const child = spawn("bash", [destScript], { cwd: bucketDir, stdio: "inherit" });
+      child.on("exit", (code) => {
+        if (code === 0) resolve();
+        else reject(new Error(`generate-overview.sh exited with ${code} for ${bucketDir}`));
+      });
+      child.on("error", reject);
+    });
+    generated.push(path.join(bucketDir, "project-overview.txt"));
+  }
+  return generated;
+}

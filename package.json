@@ -1,11 +1,18 @@
 {
   "name": "packet-select",
-  "version": "1.0.0",
-  "main": "index.js",
-  "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+  "version": "0.1.0",
+  "description": "Curate project trees into frequency-based packets via simulated LLM curator meetings.",
+  "type": "module",
+  "bin": {
+    "packet-select": "bin/packet-select.js"
   },
-  "author": "Jamie Burkart (@openhouse)",
-  "license": "ISC",
-  "description": ""
+  "scripts": {
+    "test": "node --test"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "openai": "^4.73.0"
+  }
 }
