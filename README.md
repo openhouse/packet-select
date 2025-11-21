@@ -37,10 +37,11 @@ Key flags:
 
 ## Configuring the OpenAI API key
 
-`packet-select` looks for an OpenAI API key in one of two places:
+`packet-select` looks for an OpenAI API key in this order:
 
-- `--api-key` on the command line, or
-- the `OPENAI_API_KEY` environment variable.
+1. `--api-key` on the command line.
+2. The `OPENAI_API_KEY` environment variable (if already exported in the shell).
+3. `OPENAI_API_KEY` from a `.env` file in the `packet-select` repo root (loaded automatically at startup).
 
 You can set the environment variable directly:
 
@@ -48,15 +49,16 @@ You can set the environment variable directly:
 export OPENAI_API_KEY=sk-your-openai-api-key
 ```
 
-Or use the provided `.env.example` file:
+Or rely on the repo’s `.env` file:
 
 ```bash
 cp .env.example .env
 $EDITOR .env  # edit OPENAI_API_KEY
-set -a; source .env; set +a
+# No need to export manually; packet-select will read this file on startup.
 ```
 
-After that, run `packet-select` (or `node ./bin/packet-select.js`) and the tool will use the key from the environment.
+After that, run `packet-select` (or `node ./bin/packet-select.js`) from any directory and the tool will use the key from `.env` unless
+you override it with a shell variable or `--api-key`.
 
 ## Example: running against a CRS tree
 
@@ -78,10 +80,9 @@ One way to run `packet-select` is:
 # From the packet-select repo (once):
 npm install
 
-# Configure your API key (once per shell):
+# Configure your API key (once):
 cp .env.example .env
-$EDITOR .env  # set OPENAI_API_KEY
-set -a; source .env; set +a
+$EDITOR .env  # set OPENAI_API_KEY; packet-select loads this automatically
 
 # From your CRS working directory:
 cd "/Users/jburkart/Library/Mobile Documents/com~apple~CloudDocs/Teams/CRS/2025-11-21/crs-subtrees"
@@ -107,6 +108,19 @@ If you have `packet-select` on your PATH (e.g. via `npm link`), you can replace 
 
 ```bash
 packet-select \
+  --src-root "/Users/jburkart/Library/Mobile Documents/com~apple~CloudDocs/Teams/CRS" \
+  --prompt-file "/path/to/your/crs-brief.txt" \
+  --curators "Curator One, Curator Two" \
+  --sample-size 8 \
+  --workers 4 \
+  --model gpt-4.1-mini \
+  --out-dir "$(pwd)"
+```
+
+Alternatively, you can call the included wrapper script from any directory and let it handle `.env` loading:
+
+```bash
+/path/to/packet-select/packet-select-here.sh \
   --src-root "/Users/jburkart/Library/Mobile Documents/com~apple~CloudDocs/Teams/CRS" \
   --prompt-file "/path/to/your/crs-brief.txt" \
   --curators "Curator One, Curator Two" \
