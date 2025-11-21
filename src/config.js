@@ -49,7 +49,7 @@ export function loadConfig(argv) {
   const model = values.model || "gpt-4.1-mini";
   const outDir = path.resolve(values["out-dir"] || "./packet-select-out");
   const overviewFile = values["overview-file"] ? path.resolve(values["overview-file"]) : null;
-  const buildSubtreesBin = values["build-subtrees-bin"] || path.resolve("./scripts/crs_build_subtrees.sh");
+  const buildSubtreesBin = values["build-subtrees-bin"] || null;
   const noBuildSubtrees = Boolean(values["no-build-subtrees"]);
   const noBucketOverviews = Boolean(values["no-bucket-overviews"] || values["no-overview-subtrees"]);
   const apiKey = values["api-key"] || process.env.OPENAI_API_KEY || "";

@@ -12,9 +12,26 @@ async function pathExists(p) {
   }
 }
 
-export async function buildSubtrees({ srcRoot, outDir, frequencyPath, buildSubtreesBin, min, max, verbose }) {
+export async function buildSubtrees({
+  srcRoot,
+  outDir,
+  frequencyPath,
+  buildSubtreesBin,
+  buildSubtreesBinWasProvided = false,
+  min,
+  max,
+  verbose,
+}) {
   if (!(await pathExists(buildSubtreesBin))) {
-    throw new Error(`Subtree builder not found at ${buildSubtreesBin}`);
+    const message = `Subtree builder not found at ${buildSubtreesBin}`;
+    if (buildSubtreesBinWasProvided) {
+      throw new Error(`${message}\n  - To disable subtree generation, pass --no-build-subtrees\n  - To specify a script, pass --build-subtrees-bin /path/to/crs_build_subtrees.sh`);
+    }
+    console.warn(
+      `packet-select WARN: ${message}; skipping subtree generation. ` +
+      "Pass --build-subtrees-bin /path/to/script or --no-build-subtrees to silence this."
+    );
+    return null;
   }
   if (!(await pathExists(frequencyPath))) {
     throw new Error(`Frequency TSV missing at ${frequencyPath}`);
