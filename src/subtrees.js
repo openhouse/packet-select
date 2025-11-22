@@ -69,11 +69,14 @@ export async function buildSubtrees({
   return destRoot;
 }
 
-export async function generateBucketOverviews({ subtreesRoot, overviewScriptPath, verbose }) {
+export async function generateBucketOverviews({ subtreesRoot, overviewScriptPath, verbose, overviewCollectionDir }) {
   if (!(await pathExists(subtreesRoot))) return [];
   const entries = await fs.readdir(subtreesRoot, { withFileTypes: true });
   const buckets = entries.filter((e) => e.isDirectory() && e.name.startsWith("gte"));
   const generated = [];
+  if (overviewCollectionDir) {
+    await fs.mkdir(overviewCollectionDir, { recursive: true });
+  }
   for (const bucket of buckets) {
     const bucketDir = path.join(subtreesRoot, bucket.name);
     const scriptsDir = path.join(bucketDir, "scripts");
@@ -90,7 +93,18 @@ export async function generateBucketOverviews({ subtreesRoot, overviewScriptPath
       });
       child.on("error", reject);
     });
-    generated.push(path.join(bucketDir, "project-overview.txt"));
+    const overviewPath = path.join(bucketDir, "project-overview.txt");
+    generated.push(overviewPath);
+    if (overviewCollectionDir) {
+      try {
+        await fs.access(overviewPath);
+        const dest = path.join(overviewCollectionDir, `${bucket.name}-project-overview.txt`);
+        await fs.copyFile(overviewPath, dest);
+        logInfo(verbose, `Copied bucket overview to ${dest}`);
+      } catch {
+        logInfo(verbose, `Skipping missing overview for ${bucketDir}`);
+      }
+    }
   }
   return generated;
 }

@@ -28,6 +28,36 @@ function resolveBuildSubtreesBin(buildSubtreesBin) {
 // Load .env from the packet-select repo root if present
 dotenv.config({ path: path.join(repoRoot, ".env") });
 
+function buildMeetingPlan({ curators, sampleSize, crossPollinate }) {
+  if (!crossPollinate) {
+    return Array.from({ length: sampleSize }, (_, i) => ({
+      index: i + 1,
+      round: 1,
+      curators,
+    }));
+  }
+
+  const pairs = [];
+  for (let i = 0; i < curators.length; i++) {
+    for (let j = i + 1; j < curators.length; j++) {
+      pairs.push([curators[i], curators[j]]);
+    }
+  }
+
+  const meetings = [];
+  for (let round = 1; round <= sampleSize; round++) {
+    for (const pair of pairs) {
+      meetings.push({
+        index: meetings.length + 1,
+        round,
+        curators: pair,
+      });
+    }
+  }
+
+  return meetings;
+}
+
 async function main() {
   let config;
   try {
@@ -58,6 +88,7 @@ async function main() {
     noBucketOverviews,
     apiKey,
     verbose,
+    crossPollinate,
     reasoningEffort,
   } = config;
 
@@ -86,34 +117,49 @@ async function main() {
 
   const client = new OpenAI({ apiKey });
 
-  const workerCount = Math.min(workers, sampleSize);
-  const padWidth = Math.max(3, String(sampleSize).length);
-  let nextIndex = 1;
+  const meetings = buildMeetingPlan({ curators, sampleSize, crossPollinate });
+  const totalMeetings = meetings.length;
+  const workerCount = Math.min(workers, totalMeetings);
+  const padWidth = Math.max(3, String(totalMeetings).length);
+  const pairsPerRound = crossPollinate ? (curators.length * (curators.length - 1)) / 2 : null;
+  let nextIndex = 0;
   let errors = 0;
 
-  async function runMeetingIndex(index) {
+  if (crossPollinate) {
+    logInfo(verbose, "packet-select: cross-pollinate mode");
+    logInfo(verbose, `  curators: ${curators.length}`);
+    logInfo(verbose, `  pairs per round: ${pairsPerRound}`);
+    logInfo(verbose, `  rounds (sample-size): ${sampleSize}`);
+    logInfo(verbose, `  total meetings planned: ${totalMeetings}`);
+  } else {
+    logInfo(verbose, `packet-select: planning ${totalMeetings} meetings (group mode)`);
+  }
+
+  async function runMeetingIndex(meeting) {
     try {
       await runMeeting({
         client,
         model,
-        curators,
+        curators: meeting.curators,
         promptText: promptTextResolved,
         overviewText,
         srcRoot,
-        sampleSize,
-        runIndex: index,
+        sampleSize: totalMeetings,
+        runIndex: meeting.index,
         fileSet,
         minutesDir,
         decisionsDir,
         errorsDir,
         verbose,
         reasoningEffort,
+        meetingMode: crossPollinate ? "cross-pollinate" : "group",
+        round: meeting.round,
       });
     } catch (err) {
       errors++;
       const message = err?.message || String(err);
-      console.error(`packet-select: meeting ${index} failed: ${message}`);
-      const errorPath = path.join(errorsDir, `meeting-${padIndex(index, padWidth)}.error.log`);
+      console.error(`packet-select: meeting ${meeting.index} failed: ${message}`);
+      const errorPath = path.join(errorsDir, `meeting-${padIndex(meeting.index, padWidth)}.error.log`);
       await fs.writeFile(errorPath, `${err?.stack || message}\n`, "utf8");
     }
   }
@@ -121,20 +167,24 @@ async function main() {
   async function workerLoop() {
     while (true) {
       const index = nextIndex++;
-      if (index > sampleSize) return;
-      await runMeetingIndex(index);
+      if (index >= meetings.length) return;
+      await runMeetingIndex(meetings[index]);
     }
   }
 
   await Promise.all(Array.from({ length: workerCount }, () => workerLoop()));
 
-  if (errors === sampleSize) {
+  if (errors === totalMeetings) {
     console.error("packet-select: All meetings failed");
     process.exit(1);
   }
 
-  const { votes, records, maxCount, frequencyTsv, decisionsFiles } = await aggregateDecisions({ decisionsDir, fileSet, sampleSize });
+  const { votes, records, maxCount, frequencyTsv, decisionsFiles } = await aggregateDecisions({ decisionsDir, fileSet, sampleSize: totalMeetings });
   const completedMeetings = decisionsFiles.length;
+  const projectOverviewsDir = !noBuildSubtrees && !noBucketOverviews && maxCount > 0
+    ? path.join(outDir, "project-overviews")
+    : null;
+
   const { frequencyPath } = await writeAggregationOutputs({
     outDir,
     votes,
@@ -145,6 +195,7 @@ async function main() {
       srcRoot,
       model,
       sampleSize,
+      totalMeetings,
       workers,
       curators,
       overviewPath: overviewPath || "fallback-listing",
@@ -154,6 +205,9 @@ async function main() {
       completedMeetings,
       failedMeetings: errors,
       reasoningEffort,
+      crossPollinate,
+      pairsPerRound,
+      projectOverviewsDir,
     },
   });
 
@@ -173,7 +227,8 @@ async function main() {
         ? path.join(path.dirname(overviewPath), "scripts", "generate-overview.sh")
         : path.resolve("scripts", "generate-overview.sh");
       if (await fs.stat(overviewScript).catch(() => null)) {
-        await generateBucketOverviews({ subtreesRoot, overviewScriptPath: overviewScript, verbose });
+        const overviewCollectionDir = projectOverviewsDir || path.join(outDir, "project-overviews");
+        await generateBucketOverviews({ subtreesRoot, overviewScriptPath: overviewScript, verbose, overviewCollectionDir });
       } else {
         logInfo(verbose, `No generate-overview.sh found to run inside buckets`);
       }
@@ -181,9 +236,9 @@ async function main() {
   }
 
   if (errors > 0) {
-    console.error(`packet-select: complete with ${completedMeetings}/${sampleSize} meetings succeeded (${errors} failed)`);
+    console.error(`packet-select: complete with ${completedMeetings}/${totalMeetings} meetings succeeded (${errors} failed)`);
   } else {
-    console.error(`packet-select: complete (${completedMeetings}/${sampleSize} meetings succeeded)`);
+    console.error(`packet-select: complete (${completedMeetings}/${totalMeetings} meetings succeeded)`);
   }
 }
 

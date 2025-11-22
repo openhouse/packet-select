@@ -31,6 +31,7 @@ export function loadConfig(argv) {
       "no-bucket-overviews": { type: "boolean" },
       "no-overview-subtrees": { type: "boolean" },
       "api-key": { type: "string" },
+      "cross-pollinate": { type: "boolean" },
       "reasoning-effort": { type: "string" },
       verbose: { type: "boolean" },
       help: { type: "boolean", short: "h" },
@@ -58,6 +59,7 @@ export function loadConfig(argv) {
   const apiKey = values["api-key"] || process.env.OPENAI_API_KEY || "";
   const verbose = Boolean(values.verbose);
   const reasoningEffort = values["reasoning-effort"] || "high";
+  const crossPollinate = Boolean(values["cross-pollinate"]);
 
   required(srcRoot, "--src-root is required");
   if (!promptText && !promptFile) {
@@ -79,6 +81,9 @@ export function loadConfig(argv) {
   if (!ALLOWED_REASONING_EFFORTS.includes(reasoningEffort)) {
     throw new Error(`Invalid --reasoning-effort "${reasoningEffort}". Expected one of: ${ALLOWED_REASONING_EFFORTS.join(", ")}.`);
   }
+  if (crossPollinate && curators.length < 2) {
+    throw new Error("--cross-pollinate requires at least two curators");
+  }
 
   return {
     help: false,
@@ -87,7 +92,7 @@ export function loadConfig(argv) {
     promptFile,
     curators,
     sampleSize,
-    workers: Math.min(workers, sampleSize),
+    workers,
     model,
     outDir,
     overviewFile,
@@ -96,6 +101,7 @@ export function loadConfig(argv) {
     noBucketOverviews,
     apiKey,
     verbose,
+    crossPollinate,
     reasoningEffort,
   };
 }
@@ -108,5 +114,5 @@ export function usage() {
   [--sample-size <int>] [--workers <int>] [--model <id>] \n\
   [--out-dir <dir>] [--overview-file <file>] [--build-subtrees-bin <path>] \n\
   [--no-build-subtrees] [--no-bucket-overviews] [--api-key <key>] [--verbose] \n\
-  [--reasoning-effort <minimal|low|medium|high|auto>]`;
+  [--cross-pollinate] [--reasoning-effort <minimal|low|medium|high|auto>]`;
 }
