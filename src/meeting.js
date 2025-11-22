@@ -37,6 +37,8 @@ export async function runMeeting({
   srcRoot,
   sampleSize,
   runIndex,
+  meetingMode = "group",
+  round = 1,
   fileSet,
   minutesDir,
   decisionsDir,
@@ -86,6 +88,8 @@ export async function runMeeting({
   const minutesPayload = {
     meetingIndex: runIndex,
     sampleSize,
+    round,
+    mode: meetingMode,
     curators,
     prompt: "[omitted inline]",
     summary: parsed.summary || "",
@@ -95,6 +99,8 @@ export async function runMeeting({
   const decisionsPayload = {
     meetingIndex: runIndex,
     sampleSize,
+    round,
+    mode: meetingMode,
     curators,
     packetSummary: parsed.decisions?.packet_summary || "",
     keep: filteredKeep,

@@ -26,13 +26,14 @@ Key flags:
 - `--src-root` (required): Project root to curate.
 - `--prompt-file` or `--prompt` (required): Curatorial instructions.
 - `--curators` (required): Comma-separated curator names.
-- `--sample-size`: Number of simulated meetings (default 8).
+- `--sample-size`: Number of simulated meetings (or rounds in cross-pollinate mode; default 8).
 - `--workers`: Max meetings to run concurrently (default 1).
 - `--model`: OpenAI model (default `gpt-4.1-mini`).
 - `--overview-file`: Provide an existing overview instead of generating one.
 - `--build-subtrees-bin`: Path to subtree builder script (default `<repo-root>/scripts/crs_build_subtrees.sh`; relative paths are resolved from the repo root).
 - `--no-build-subtrees`: Skip subtree generation.
 - `--no-bucket-overviews`: Skip generating `project-overview.txt` inside buckets.
+- `--cross-pollinate`: Run one-on-one meetings between all unique curator pairs. With `n` curators and `--sample-size R`, this produces `R * n * (n - 1) / 2` meetings.
 - `--reasoning-effort`: Reasoning effort for GPT-5 models (minimal, low, medium, high, auto). Default is `high`; ignored for non-GPT-5 models.
 - `--api-key`: OpenAI API key (or set `OPENAI_API_KEY`).
 - `--verbose`: Print progress logs.
@@ -142,6 +143,7 @@ A typical run writes files into `--out-dir`:
 - `data/file-frequency.tsv` and `data/file-votes.json` summarizing selections.
 - `run.json` with metadata about the invocation.
 - `subtrees/gteNN/` directories (unless disabled) built from the frequency table.
+- `project-overviews/*.txt` files collecting each bucket's `project-overview.txt` (when bucket overviews are generated).
 - Optional per-bucket `project-overview.txt` files if overview generation is available.
 
 ## Scripts

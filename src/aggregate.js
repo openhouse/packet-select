@@ -46,11 +46,20 @@ export async function writeAggregationOutputs({ outDir, votes, frequencyTsv, max
   await fs.writeFile(frequencyPath, frequencyTsv + "\n", "utf8");
   await fs.writeFile(votesPath, JSON.stringify(votes, null, 2));
 
+  const completedMeetings = meta.completedMeetings ?? meta.decisionsFiles?.length ?? 0;
+  const plannedMeetings = meta.totalMeetings ?? meta.sampleSize ?? completedMeetings;
+  const failedMeetings = meta.failedMeetings ?? Math.max(0, plannedMeetings - completedMeetings);
+  const meetingMode = meta.crossPollinate ? "cross-pollinate" : "group";
+
   const runManifest = {
     srcRoot: meta.srcRoot,
     outDir,
     model: meta.model,
     sampleSize: meta.sampleSize,
+    totalMeetings: plannedMeetings,
+    meetingMode,
+    pairsPerRound: meta.pairsPerRound ?? null,
+    crossPollinate: Boolean(meta.crossPollinate),
     workers: meta.workers,
     curators: meta.curators,
     overviewPath: meta.overviewPath,
@@ -58,13 +67,14 @@ export async function writeAggregationOutputs({ outDir, votes, frequencyTsv, max
     totalFiles: meta.totalFiles,
     maxCount,
     uniqueFiles: records.length,
-    completedMeetings: meta.completedMeetings ?? meta.decisionsFiles?.length ?? 0,
-    failedMeetings: meta.failedMeetings ?? Math.max(0, (meta.sampleSize || 0) - (meta.completedMeetings ?? meta.decisionsFiles?.length ?? 0)),
+    completedMeetings,
+    failedMeetings,
     reasoningEffort: meta.reasoningEffort,
     createdAt: new Date().toISOString(),
     frequencyTsv: frequencyPath,
     votesJson: votesPath,
     decisionsFiles: meta.decisionsFiles,
+    projectOverviewsDir: meta.projectOverviewsDir || null,
   };
   await fs.writeFile(path.join(outDir, "run.json"), JSON.stringify(runManifest, null, 2));
 
