@@ -7,6 +7,8 @@
 #   1. A directory structure overview (via 'tree' or 'ls -R')
 #   2. A single-pass approach to display textual contents of files:
 #      - PDFs extracted as text, using pdftotext or OCR fallback.
+#      - Word .docx files (when pandoc is available) converted to Markdown
+#        via pandoc with track changes & comments preserved, then shown as text.
 #      - Plain text or JSON/XML files shown in full, except:
 #         * 'generatedOutputs.json' and 'evaluationResults.json' get summarized.
 #         * 'whisper.json' is partially stripped: keep first 3 & last 3 segments
@@ -29,11 +31,19 @@
 #   - tesseract (optional, for OCR fallback if PDF has no embedded text)
 #   - ollama (optional, to list installed local models)
 #   - jq (for JSON processing)
+#   - pandoc (optional, for converting .docx files to Markdown with tracked changes & comments)
 #   - coreutils / gshuf (optional, for random sampling in summarizing large logs)
 #
 # WARNING:
 #   This script can expose sensitive data in 'project-overview.txt'.
 #   Handle the resulting file with care!
+#
+# Version history:
+#   2025-11-24 (v1.1.0)
+#     - Add pandoc-based handling for .docx files: convert to Markdown via
+#       pandoc with --track-changes=all so tracked changes & comments are
+#       preserved in the text dump when pandoc is available.
+#   (Earlier versions prior to v1.1.0 are not recorded here; see git history.)
 ##############################################################################
 
 ##############################################################################
@@ -325,8 +335,8 @@ else
     -path "*/node_modules" -prune -o \
     -path "*/dist" -prune -o \
     -path "*/.venv" -prune -o \
-    -name "project-overview*" -prune -o \
-    -name ".DS_Store" -prune -o \    
+    -path "*/project-overview*" -prune -o \
+    -name ".DS_Store" -prune -o \
     -print | safe_print_command
   safe_echo '```'
 fi
@@ -523,7 +533,19 @@ else
         done < "$file"
         ;;
       *)
-        safe_echo "(File type is $MIME_TYPE — skipping raw dump.)"
+        case "$file" in
+          *.docx|*.DOCX)
+            if command -v pandoc >/dev/null 2>&1; then
+              safe_echo "(Converted from .docx via pandoc --track-changes=all; showing Markdown with tracked changes & comments where present.)"
+              pandoc --track-changes=all "$file" -t markdown 2>/dev/null | safe_print_command
+            else
+              safe_echo "(pandoc not installed; cannot convert .docx to text. File type is $MIME_TYPE — skipping raw dump.)"
+            fi
+            ;;
+          *)
+            safe_echo "(File type is $MIME_TYPE — skipping raw dump.)"
+            ;;
+        esac
         ;;
     esac
 
@@ -535,4 +557,3 @@ fi
 safe_echo ""
 safe_echo "---"
 safe_echo ""
-
