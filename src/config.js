@@ -26,6 +26,7 @@ export function loadConfig(argv) {
       model: { type: "string", short: "m" },
       "out-dir": { type: "string", short: "o" },
       "overview-file": { type: "string" },
+      "meeting-size": { type: "string" },
       "build-subtrees-bin": { type: "string" },
       "no-build-subtrees": { type: "boolean" },
       "no-bucket-overviews": { type: "boolean" },
@@ -49,6 +50,7 @@ export function loadConfig(argv) {
   const curatorsRaw = values.curators || null;
   const curators = curatorsRaw ? curatorsRaw.split(/,\s*/).filter(Boolean) : [];
   const sampleSize = Number(values["sample-size"] || values.samples || 8);
+  const meetingSize = values["meeting-size"] !== undefined ? Number(values["meeting-size"]) : undefined;
   const workers = Number(values.workers || 1);
   const model = values.model || "gpt-4.1-mini";
   const outDir = path.resolve(values["out-dir"] || "./packet-select-out");
@@ -72,6 +74,9 @@ export function loadConfig(argv) {
   if (!Number.isInteger(sampleSize) || sampleSize < 1) {
     throw new Error("--sample-size must be a positive integer");
   }
+  if (meetingSize !== undefined && (!Number.isInteger(meetingSize) || meetingSize < 1)) {
+    throw new Error("--meeting-size must be a positive integer");
+  }
   if (!Number.isInteger(workers) || workers < 1) {
     throw new Error("--workers must be a positive integer");
   }
@@ -83,6 +88,15 @@ export function loadConfig(argv) {
   }
   if (crossPollinate && curators.length < 2) {
     throw new Error("--cross-pollinate requires at least two curators");
+  }
+  if (crossPollinate) {
+    const k = meetingSize ?? 2;
+    if (k < 2) {
+      throw new Error("--meeting-size must be at least 2 when using --cross-pollinate");
+    }
+    if (k > curators.length) {
+      throw new Error(`--meeting-size (${k}) cannot exceed number of curators (${curators.length})`);
+    }
   }
 
   return {
@@ -102,6 +116,7 @@ export function loadConfig(argv) {
     apiKey,
     verbose,
     crossPollinate,
+    meetingSize,
     reasoningEffort,
   };
 }
@@ -111,7 +126,7 @@ export function usage() {
   --src-root <dir> \n\
   (--prompt-file <file> | --prompt <text>) \n\
   --curators "Name1, Name2" \n\
-  [--sample-size <int>] [--workers <int>] [--model <id>] \n\
+  [--sample-size <int>] [--meeting-size <int>] [--workers <int>] [--model <id>] \n\
   [--out-dir <dir>] [--overview-file <file>] [--build-subtrees-bin <path>] \n\
   [--no-build-subtrees] [--no-bucket-overviews] [--api-key <key>] [--verbose] \n\
   [--cross-pollinate] [--reasoning-effort <minimal|low|medium|high|auto>]`;

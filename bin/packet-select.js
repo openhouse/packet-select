@@ -10,6 +10,7 @@ import { listProjectFiles, logInfo, padIndex } from "../src/utils.js";
 import { runMeeting } from "../src/meeting.js";
 import { aggregateDecisions, writeAggregationOutputs } from "../src/aggregate.js";
 import { buildSubtrees, generateBucketOverviews } from "../src/subtrees.js";
+import { buildCrossPollinateMeetings } from "../src/crossPollinate.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -28,34 +29,22 @@ function resolveBuildSubtreesBin(buildSubtreesBin) {
 // Load .env from the packet-select repo root if present
 dotenv.config({ path: path.join(repoRoot, ".env") });
 
-function buildMeetingPlan({ curators, sampleSize, crossPollinate }) {
+function buildMeetingPlan({ curators, sampleSize, crossPollinate, meetingSize }) {
   if (!crossPollinate) {
-    return Array.from({ length: sampleSize }, (_, i) => ({
-      index: i + 1,
-      round: 1,
-      curators,
-    }));
+    const meetingSizeResolved = curators.length;
+    return {
+      meetings: Array.from({ length: sampleSize }, (_, i) => ({
+        index: i + 1,
+        round: 1,
+        curators,
+        meetingSize: meetingSizeResolved,
+      })),
+      groupsPerRound: 1,
+      meetingSize: meetingSizeResolved,
+    };
   }
 
-  const pairs = [];
-  for (let i = 0; i < curators.length; i++) {
-    for (let j = i + 1; j < curators.length; j++) {
-      pairs.push([curators[i], curators[j]]);
-    }
-  }
-
-  const meetings = [];
-  for (let round = 1; round <= sampleSize; round++) {
-    for (const pair of pairs) {
-      meetings.push({
-        index: meetings.length + 1,
-        round,
-        curators: pair,
-      });
-    }
-  }
-
-  return meetings;
+  return buildCrossPollinateMeetings({ curators, sampleSize, meetingSize });
 }
 
 async function main() {
@@ -79,6 +68,7 @@ async function main() {
     promptFile,
     curators,
     sampleSize,
+    meetingSize,
     workers,
     model,
     outDir,
@@ -117,7 +107,12 @@ async function main() {
 
   const client = new OpenAI({ apiKey });
 
-  const meetings = buildMeetingPlan({ curators, sampleSize, crossPollinate });
+  const { meetings, groupsPerRound, meetingSize: plannedMeetingSize } = buildMeetingPlan({
+    curators,
+    sampleSize,
+    crossPollinate,
+    meetingSize,
+  });
   const totalMeetings = meetings.length;
   const workerCount = Math.min(workers, totalMeetings);
   const padWidth = Math.max(3, String(totalMeetings).length);
@@ -128,6 +123,8 @@ async function main() {
   if (crossPollinate) {
     logInfo(verbose, "packet-select: cross-pollinate mode");
     logInfo(verbose, `  curators: ${curators.length}`);
+    logInfo(verbose, `  meeting size: ${plannedMeetingSize}`);
+    logInfo(verbose, `  groups per round: ${groupsPerRound}`);
     logInfo(verbose, `  pairs per round: ${pairsPerRound}`);
     logInfo(verbose, `  rounds (sample-size): ${sampleSize}`);
     logInfo(verbose, `  total meetings planned: ${totalMeetings}`);
@@ -154,6 +151,7 @@ async function main() {
         reasoningEffort,
         meetingMode: crossPollinate ? "cross-pollinate" : "group",
         round: meeting.round,
+        meetingSize: meeting.meetingSize,
       });
     } catch (err) {
       errors++;
@@ -207,6 +205,8 @@ async function main() {
       reasoningEffort,
       crossPollinate,
       pairsPerRound,
+      groupsPerRound: crossPollinate ? groupsPerRound : null,
+      meetingSize: plannedMeetingSize,
       projectOverviewsDir,
     },
   });
