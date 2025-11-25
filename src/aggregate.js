@@ -59,6 +59,8 @@ export async function writeAggregationOutputs({ outDir, votes, frequencyTsv, max
     totalMeetings: plannedMeetings,
     meetingMode,
     pairsPerRound: meta.pairsPerRound ?? null,
+    groupsPerRound: meta.groupsPerRound ?? null,
+    meetingSize: meta.meetingSize ?? null,
     crossPollinate: Boolean(meta.crossPollinate),
     workers: meta.workers,
     curators: meta.curators,

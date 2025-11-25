@@ -33,7 +33,8 @@ Key flags:
 - `--build-subtrees-bin`: Path to subtree builder script (default `<repo-root>/scripts/crs_build_subtrees.sh`; relative paths are resolved from the repo root).
 - `--no-build-subtrees`: Skip subtree generation.
 - `--no-bucket-overviews`: Skip generating `project-overview.txt` inside buckets.
-- `--cross-pollinate`: Run one-on-one meetings between all unique curator pairs. With `n` curators and `--sample-size R`, this produces `R * n * (n - 1) / 2` meetings.
+- `--cross-pollinate`: Run covering rounds that ensure every curator pair meets each round. Without `--meeting-size`, this is the original one-on-one pairing (total meetings: `R * n * (n - 1) / 2`). With `--meeting-size k`, generate `k`-curator groups per round that still cover every pair at least once.
+- `--meeting-size`: In cross-pollinate mode, size of each meeting (`k >= 2`). Defaults to 2 (one-on-one) when omitted.
 - `--reasoning-effort`: Reasoning effort for GPT-5 models (minimal, low, medium, high, auto). Default is `high`; ignored for non-GPT-5 models.
 - `--api-key`: OpenAI API key (or set `OPENAI_API_KEY`).
 - `--verbose`: Print progress logs.
