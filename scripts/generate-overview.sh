@@ -39,6 +39,9 @@
 #   Handle the resulting file with care!
 #
 # Version history:
+#   2025-11-25 (v1.1.1)
+#     - Sample large CSV files with header + head/tail lines to avoid oversized
+#       overview output while keeping small CSVs fully dumped.
 #   2025-11-24 (v1.1.0)
 #     - Add pandoc-based handling for .docx files: convert to Markdown via
 #       pandoc with --track-changes=all so tracked changes & comments are
@@ -76,6 +79,8 @@ PROJECT_NAME="$(basename "$PROJECT_ROOT")"
 
 OUTPUT_FILE="project-overview.txt"
 MAX_TOTAL_LINES="${MAX_TOTAL_LINES:-3000}"
+CSV_SAMPLE_LINES="${CSV_SAMPLE_LINES:-5}"
+CSV_LARGE_BYTES="${CSV_LARGE_BYTES:-10485760}"
 
 CURRENT_LINE_COUNT=0
 STOP_OUTPUT=false
@@ -116,6 +121,28 @@ safe_print_command() {
     echo "$line" >> "$OUTPUT_FILE"
     CURRENT_LINE_COUNT=$((CURRENT_LINE_COUNT + 1))
   done
+}
+
+##############################################################################
+# dump_csv_file: dumps CSV fully or samples head/tail for large files
+##############################################################################
+dump_csv_file() {
+  local filePath="$1"
+  local fileSize
+  fileSize=$(stat -c%s "$filePath" 2>/dev/null || stat -f%z "$filePath" 2>/dev/null || wc -c < "$filePath")
+
+  if [ "$fileSize" -le "$CSV_LARGE_BYTES" ]; then
+    while IFS= read -r line; do
+      if [ "$STOP_OUTPUT" = true ]; then break; fi
+      safe_echo "$line"
+    done < "$filePath"
+    return
+  fi
+
+  safe_echo "(Large CSV; truncating content dump. Showing header + first $CSV_SAMPLE_LINES lines and last $CSV_SAMPLE_LINES lines. Size: $fileSize bytes.)"
+  head -n "$((CSV_SAMPLE_LINES + 1))" "$filePath" | safe_print_command
+  safe_echo "... truncated ..."
+  tail -n "$CSV_SAMPLE_LINES" "$filePath" | safe_print_command
 }
 
 # Start fresh
@@ -525,12 +552,19 @@ else
           tail -n 30 "$file" | safe_print_command
         fi
         ;;
+      text/csv)
+        dump_csv_file "$file"
+        ;;
       text/*|application/xml)
-        # Print plain text or XML fully
-        while IFS= read -r line; do
-          if [ "$STOP_OUTPUT" = true ]; then break; fi
-          safe_echo "$line"
-        done < "$file"
+        if [[ "$file" == *.csv || "$file" == *.CSV ]]; then
+          dump_csv_file "$file"
+        else
+          # Print plain text or XML fully
+          while IFS= read -r line; do
+            if [ "$STOP_OUTPUT" = true ]; then break; fi
+            safe_echo "$line"
+          done < "$file"
+        fi
         ;;
       *)
         case "$file" in
