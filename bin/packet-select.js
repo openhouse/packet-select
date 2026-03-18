@@ -7,11 +7,12 @@ import OpenAI from "openai";
 import { loadConfig, usage } from "../src/config.js";
 import { resolveOverview } from "../src/overview.js";
 import { listProjectFiles, logInfo, padIndex, ensureTrailingNewline } from "../src/utils.js";
-import { runMeeting, buildMeetingInput, estimateRequestTokens } from "../src/meeting.js";
+import { runMeeting, buildMeetingInput, estimateRequestTokens, isDeterministicRequestError } from "../src/meeting.js";
 import { aggregateDecisions, writeAggregationOutputs } from "../src/aggregate.js";
 import { buildSubtrees, generateBucketOverviews } from "../src/subtrees.js";
 import { buildCrossPollinateMeetings } from "../src/crossPollinate.js";
 import { RollingWindowScheduler } from "../src/rateLimiter.js";
+import { buildPromptCacheKey, sanitizePromptCacheKey, validatePromptCacheKey } from "../src/promptCache.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -37,7 +38,32 @@ function buildMeetingPlan({ curators, sampleSize, crossPollinate, meetingSize })
   return buildCrossPollinateMeetings({ curators, sampleSize, meetingSize });
 }
 
-async function writePreflight({ outDir, overview, preflight, totalMeetings, tpmLimit, rpmLimit, requestedWorkers, workerCount }) {
+function resolvePromptCache(config, { srcRoot, model, promptText, manifestText, overviewText, verbose }) {
+  if (config.noPromptCache) {
+    logInfo(verbose, "Prompt caching: disabled (--no-prompt-cache)");
+    return { enabled: false, source: "disabled", key: null, retention: null, keyLength: 0 };
+  }
+
+  const explicitKey = config.promptCacheKey ? sanitizePromptCacheKey(config.promptCacheKey) : null;
+  const key = explicitKey || buildPromptCacheKey({
+    enabled: true,
+    srcRoot,
+    model,
+    promptText,
+    manifestText,
+    overviewText,
+  });
+  const validation = validatePromptCacheKey(key);
+  if (!validation.valid) {
+    throw new Error(`Invalid prompt cache key during preflight: ${validation.reason}`);
+  }
+  const retention = config.promptCacheRetention || null;
+  const promptCache = { enabled: Boolean(key), source: explicitKey ? "explicit" : "derived", key, retention, keyLength: key?.length || 0 };
+  logInfo(verbose, `Prompt caching: ${promptCache.enabled ? promptCache.source : "disabled"}${promptCache.enabled ? ` (key length ${promptCache.keyLength})` : ""}`);
+  return promptCache;
+}
+
+async function writePreflight({ outDir, overview, preflight, totalMeetings, tpmLimit, rpmLimit, requestedWorkers, workerCount, schedulerUtilization, promptCache }) {
   const lines = [
     `overview_bytes=${Buffer.byteLength(overview.archivalOverviewText, "utf8")}`,
     `overview_chars=${overview.archivalOverviewText.length}`,
@@ -51,8 +77,12 @@ async function writePreflight({ outDir, overview, preflight, totalMeetings, tpmL
     `estimated_total_input_tokens=${preflight.inputTokens * totalMeetings}`,
     `tpm_limit=${tpmLimit ?? "unset"}`,
     `rpm_limit=${rpmLimit ?? "unset"}`,
+    `scheduler_utilization=${schedulerUtilization}`,
     `requested_workers=${requestedWorkers}`,
     `effective_workers=${workerCount}`,
+    `prompt_cache=${promptCache.enabled ? promptCache.source : "disabled"}`,
+    `prompt_cache_key_length=${promptCache.keyLength}`,
+    `prompt_cache_retention=${promptCache.retention ?? "unset"}`,
   ];
   const text = ensureTrailingNewline(lines.join("\n"));
   await fs.writeFile(path.join(outDir, "preflight.txt"), text, "utf8");
@@ -77,7 +107,7 @@ async function main() {
     srcRoot, promptText, promptFile, curators, sampleSize, meetingSize, workers, model, outDir, overviewFile,
     buildSubtreesBin: configuredBuildSubtreesBin, noBuildSubtrees, noBucketOverviews, apiKey, verbose,
     crossPollinate, reasoningEffort, maxInputTokens, maxOverviewTokens, reserveOutputTokens, maxOutputTokens,
-    tpmLimit, rpmLimit, requestTimeoutMs, maxRetries, dryRun,
+    tpmLimit, rpmLimit, requestTimeoutMs, maxRetries, dryRun, schedulerUtilization,
   } = config;
 
   const buildSubtreesBin = resolveBuildSubtreesBin(configuredBuildSubtreesBin);
@@ -96,34 +126,43 @@ async function main() {
   const fileSet = new Set(fileList);
 
   const overview = await resolveOverview({ srcRoot, overviewFileFlag: overviewFile, verbose, maxOverviewTokens, outDir, promptText: promptTextResolved });
-  const client = new OpenAI({ apiKey, timeout: requestTimeoutMs });
+  const client = dryRun ? { responses: {} } : new OpenAI({ apiKey, timeout: requestTimeoutMs });
+  const promptCache = resolvePromptCache(config, {
+    srcRoot,
+    model,
+    promptText: promptTextResolved,
+    manifestText: overview.manifestText,
+    overviewText: overview.overviewText,
+    verbose,
+  });
 
   const { meetings, groupsPerRound, meetingSize: plannedMeetingSize } = buildMeetingPlan({ curators, sampleSize, crossPollinate, meetingSize });
   const totalMeetings = meetings.length;
   const padWidth = Math.max(3, String(totalMeetings).length);
   const pairsPerRound = crossPollinate ? (curators.length * (curators.length - 1)) / 2 : null;
+  const sampleMeeting = meetings[0];
   const sampleRequest = buildMeetingInput({
-    curators: meetings[0].curators,
+    curators: sampleMeeting.curators,
     promptText: promptTextResolved,
     overviewText: overview.overviewText,
     manifestText: overview.manifestText,
     srcRoot,
     sampleSize: totalMeetings,
-    runIndex: meetings[0].index,
+    runIndex: sampleMeeting.index,
     fileCount: fileSet.size,
-    round: meetings[0].round,
+    round: sampleMeeting.round,
     meetingMode: crossPollinate ? "cross-pollinate" : "group",
-    meetingSize: meetings[0].meetingSize,
+    meetingSize: sampleMeeting.meetingSize,
   });
-  const preflight = await estimateRequestTokens({ client, model, input: sampleRequest.input, maxOutputTokens });
+  const preflight = await estimateRequestTokens({ client, model, request: sampleRequest, maxOutputTokens, reasoningEffort, promptCache, verbose });
   if (preflight.inputTokens + reserveOutputTokens > maxInputTokens) {
     throw new Error(`Estimated request size ${preflight.inputTokens} input tokens plus ${reserveOutputTokens} reserved output tokens exceeds --max-input-tokens ${maxInputTokens}. Reduce overview budget or manifest size.`);
   }
 
-  const safeWorkersByTpm = tpmLimit ? Math.max(1, Math.floor((tpmLimit * 0.8) / Math.max(1, preflight.inputTokens + reserveOutputTokens))) : workers;
-  const safeWorkersByRpm = rpmLimit ? Math.max(1, Math.floor(rpmLimit * 0.8)) : workers;
+  const safeWorkersByTpm = tpmLimit ? Math.max(1, Math.floor((tpmLimit * schedulerUtilization) / Math.max(1, preflight.inputTokens + reserveOutputTokens))) : workers;
+  const safeWorkersByRpm = rpmLimit ? Math.max(1, Math.floor(rpmLimit * schedulerUtilization)) : workers;
   const workerCount = Math.max(1, Math.min(workers, totalMeetings, safeWorkersByTpm, safeWorkersByRpm));
-  await writePreflight({ outDir, overview, preflight, totalMeetings, tpmLimit, rpmLimit, requestedWorkers: workers, workerCount });
+  await writePreflight({ outDir, overview, preflight, totalMeetings, tpmLimit, rpmLimit, requestedWorkers: workers, workerCount, schedulerUtilization, promptCache });
 
   if (crossPollinate) {
     logInfo(verbose, "packet-select: cross-pollinate mode");
@@ -144,13 +183,15 @@ async function main() {
     process.exit(0);
   }
 
-  const scheduler = new RollingWindowScheduler({ tpmLimit, rpmLimit });
+  const scheduler = new RollingWindowScheduler({ tpmLimit, rpmLimit, utilization: schedulerUtilization });
   let nextIndex = 0;
   let errors = 0;
+  let fatalError = null;
 
   async function runMeetingIndex(meeting) {
+    let reservation = null;
     try {
-      await scheduler.reserve({ tokens: preflight.inputTokens + reserveOutputTokens });
+      reservation = await scheduler.reserve({ tokens: preflight.inputTokens + reserveOutputTokens });
       await runMeeting({
         client,
         model,
@@ -174,19 +215,23 @@ async function main() {
         round: meeting.round,
         meetingSize: meeting.meetingSize,
         estimatedInputTokens: preflight.inputTokens,
-        promptCacheKey: `${path.basename(srcRoot)}:${model}:${promptPath}:${overview.llmOverviewPath}`,
+        promptCache,
       });
     } catch (err) {
       errors += 1;
+      if (reservation && isDeterministicRequestError(err)) reservation.release();
       const message = err?.message || String(err);
       console.error(`packet-select: meeting ${meeting.index} failed: ${message}`);
+      if (isDeterministicRequestError(err)) {
+        fatalError = err;
+      }
       const errorPath = path.join(errorsDir, `meeting-${padIndex(meeting.index, padWidth)}.error.log`);
       await fs.writeFile(errorPath, `${err?.stack || message}\n`, "utf8");
     }
   }
 
   async function workerLoop() {
-    while (true) {
+    while (!fatalError) {
       const index = nextIndex++;
       if (index >= meetings.length) return;
       await runMeetingIndex(meetings[index]);
@@ -194,6 +239,10 @@ async function main() {
   }
 
   await Promise.all(Array.from({ length: workerCount }, () => workerLoop()));
+  if (fatalError) {
+    console.error(`packet-select: aborting run after deterministic request failure: ${fatalError.message}`);
+    process.exit(1);
+  }
   if (errors === totalMeetings) {
     console.error("packet-select: All meetings failed");
     process.exit(1);
@@ -236,7 +285,9 @@ async function main() {
       reserveOutputTokens,
       tpmLimit,
       rpmLimit,
+      schedulerUtilization,
       requestTimeoutMs,
+      promptCache: { enabled: promptCache.enabled, source: promptCache.source, retention: promptCache.retention, keyLength: promptCache.keyLength },
     },
   });
 
@@ -260,6 +311,6 @@ async function main() {
 }
 
 main().catch((error) => {
-  console.error(`packet-select: fatal error: ${error.message}`);
+  console.error(`packet-select: ${error?.stack || error?.message || error}`);
   process.exit(1);
 });

@@ -43,9 +43,11 @@ Key flags:
 - `--max-overview-tokens`: Token budget for the compact model-facing overview artifact.
 - `--reserve-output-tokens` / `--max-output-tokens`: Explicit output headroom and response cap for meeting JSON.
 - `--tpm-limit` / `--max-requests-per-minute`: Rolling-window pacing budgets used to auto-bound effective workers.
+- `--scheduler-utilization`: Headroom factor applied both to worker sizing and the rolling scheduler (default `0.8`).
 - `--request-timeout-ms`: Per-request timeout for long-context meeting runs.
 - `--max-retries`: Retry budget for 408/429/5xx/timeout failures.
-- `--dry-run`: Write manifest/overview/preflight artifacts and exit before API calls.
+- `--dry-run`: Write manifest/overview/preflight artifacts and exit before API calls; no API key is required in dry-run mode.
+- `--prompt-cache-key` / `--prompt-cache-retention` / `--no-prompt-cache`: Control prompt caching. When enabled without an explicit key, packet-select derives a short hashed key from stable shared prompt content, validates it before launching workers, and omits cache fields if caching is disabled.
 - `--api-key`: OpenAI API key (or set `OPENAI_API_KEY`).
 - `--verbose`: Print progress logs.
 
@@ -156,7 +158,7 @@ A typical run writes files into `--out-dir`:
 - `subtrees/gteNN/` directories (unless disabled) built from the frequency table.
 - `project-manifest.jsonl` with full file metadata used for grounding every meeting.
 - `project-overview.llm.txt`, `context-selected.txt`, and `context-stats.json` describing the bounded model-facing context.
-- `preflight.txt` with estimated request size, long-context status, and effective worker limits.
+- `preflight.txt` with estimated request size, long-context status, effective worker limits, scheduler utilization, and prompt-cache status.
 - `project-overviews/*.txt` files collecting each bucket's `project-overview.txt` (when bucket overviews are generated).
 - Optional per-bucket `project-overview.txt` files if overview generation is available.
 

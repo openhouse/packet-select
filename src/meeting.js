@@ -75,14 +75,41 @@ export function buildMeetingInput({ curators, promptText, overviewText, manifest
   };
 }
 
-export async function estimateRequestTokens({ client, model, input, maxOutputTokens, verbose }) {
-  if (typeof client.responses?.countTokens === "function") {
-    const result = await client.responses.countTokens({ model, input, max_output_tokens: maxOutputTokens });
+export function buildMeetingRequest({ model, request, maxOutputTokens, reasoningEffort, promptCache }) {
+  const payload = {
+    model,
+    store: false,
+    max_output_tokens: maxOutputTokens,
+    instructions: request.instructions,
+    input: request.input,
+    text: {
+      format: {
+        type: "json_schema",
+        name: "packet_select_meeting",
+        schema: OUTPUT_SCHEMA,
+        strict: true,
+      },
+    },
+    ...(reasoningEffort && reasoningEffort !== "none" ? { reasoning: { effort: reasoningEffort } } : {}),
+  };
+
+  if (promptCache?.key) {
+    payload.prompt_cache_key = promptCache.key;
+    if (promptCache.retention) payload.prompt_cache_retention = promptCache.retention;
+  }
+
+  return payload;
+}
+
+export async function estimateRequestTokens({ client, model, request, maxOutputTokens, reasoningEffort, promptCache, verbose }) {
+  const payload = buildMeetingRequest({ model, request, maxOutputTokens, reasoningEffort, promptCache });
+  if (typeof client.responses?.inputTokens?.count === "function") {
+    const result = await client.responses.inputTokens.count(payload);
     return { inputTokens: result.input_tokens, method: "exact" };
   }
-  logWarn("Exact token counting API unavailable in this SDK/runtime; falling back to heuristic token estimates.");
-  const serialized = JSON.stringify({ model, input, max_output_tokens: maxOutputTokens });
-  return { inputTokens: estimateTokens(serialized), method: "heuristic", warning: true };
+  logWarn("Exact Responses input-token counting unavailable in this SDK/runtime; falling back to heuristic token estimates.");
+  const serialized = JSON.stringify(payload);
+  return { inputTokens: estimateTokens(serialized), method: "heuristic", warning: true, serializedBytes: Buffer.byteLength(serialized, "utf8") };
 }
 
 function getRetryAfterMs(error) {
@@ -92,9 +119,16 @@ function getRetryAfterMs(error) {
   return Number.isFinite(seconds) ? seconds * 1000 : null;
 }
 
-function isRetryableError(error) {
+export function isRetryableError(error) {
   const status = error?.status || error?.response?.status || null;
   return status === 408 || status === 409 || status === 429 || status >= 500 || error?.code === "ETIMEDOUT" || /timeout|timed out|ECONNRESET|socket hang up/i.test(error?.message || "");
+}
+
+export function isDeterministicRequestError(error) {
+  const status = error?.status || error?.response?.status || null;
+  if (status !== 400 && status !== 422) return false;
+  const message = String(error?.message || "");
+  return /prompt_cache_key|prompt_cache_retention|invalid.+schema|invalid.+request|invalid.+param|json_schema|validation/i.test(message);
 }
 
 export async function runMeeting({
@@ -120,9 +154,10 @@ export async function runMeeting({
   requestTimeoutMs,
   maxRetries,
   estimatedInputTokens,
-  promptCacheKey,
+  promptCache,
 }) {
   const request = buildMeetingInput({ curators, promptText, overviewText, manifestText, srcRoot, sampleSize, runIndex, fileCount: fileSet.size, round, meetingMode, meetingSize });
+  const payload = buildMeetingRequest({ model, request, maxOutputTokens, reasoningEffort, promptCache });
   logInfo(verbose, `Starting meeting ${runIndex}/${sampleSize}`);
 
   let response;
@@ -130,23 +165,7 @@ export async function runMeeting({
   while (attempt <= maxRetries) {
     attempt += 1;
     try {
-      response = await client.responses.create({
-        model,
-        store: false,
-        max_output_tokens: maxOutputTokens,
-        instructions: request.instructions,
-        input: request.input,
-        text: {
-          format: {
-            type: "json_schema",
-            name: "packet_select_meeting",
-            schema: OUTPUT_SCHEMA,
-            strict: true,
-          },
-        },
-        ...(reasoningEffort && reasoningEffort !== "none" ? { reasoning: { effort: reasoningEffort } } : {}),
-        ...(promptCacheKey ? { prompt_cache_key: promptCacheKey, prompt_cache_retention: "24h" } : {}),
-      }, { timeout: requestTimeoutMs });
+      response = await client.responses.create(payload, { timeout: requestTimeoutMs });
       break;
     } catch (error) {
       if (attempt > maxRetries || !isRetryableError(error)) throw error;
@@ -201,6 +220,7 @@ export async function runMeeting({
       outputTokens: usage.output_tokens || null,
       retries: Math.max(0, attempt - 1),
       timeoutMs: requestTimeoutMs,
+      promptCache: promptCache?.key ? { enabled: true, retention: promptCache.retention || null } : { enabled: false },
     },
   };
 
