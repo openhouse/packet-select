@@ -17,7 +17,10 @@ packet-select \
   --curators "Curator One, Curator Two" \
   --sample-size 4 \
   --model gpt-4.1-mini \
-  --reasoning-effort high \
+  --reasoning-effort low \
+  --max-input-tokens 200000 \
+  --max-output-tokens 4096 \
+  --tpm-limit 120000 \
   --out-dir ./packet-select-out
 ```
 
@@ -35,7 +38,14 @@ Key flags:
 - `--no-bucket-overviews`: Skip generating `project-overview.txt` inside buckets.
 - `--cross-pollinate`: Run covering rounds that ensure every curator pair meets each round. Without `--meeting-size`, this is the original one-on-one pairing (total meetings: `R * n * (n - 1) / 2`). With `--meeting-size k`, generate `k`-curator groups per round that still cover every pair at least once.
 - `--meeting-size`: In cross-pollinate mode, size of each meeting (`k >= 2`). Defaults to 2 (one-on-one) when omitted.
-- `--reasoning-effort`: Reasoning effort for GPT-5 models (minimal, low, medium, high, auto). Default is `high`; ignored for non-GPT-5 models.
+- `--reasoning-effort`: Reasoning effort for GPT-5 models (`none`, `minimal`, `low`, `medium`, `high`, `auto`). Default is `low`; unsupported values are normalized before requests are sent.
+- `--max-input-tokens`: Fail fast if the estimated meeting request plus reserved output headroom would exceed this cap.
+- `--max-overview-tokens`: Token budget for the compact model-facing overview artifact.
+- `--reserve-output-tokens` / `--max-output-tokens`: Explicit output headroom and response cap for meeting JSON.
+- `--tpm-limit` / `--max-requests-per-minute`: Rolling-window pacing budgets used to auto-bound effective workers.
+- `--request-timeout-ms`: Per-request timeout for long-context meeting runs.
+- `--max-retries`: Retry budget for 408/429/5xx/timeout failures.
+- `--dry-run`: Write manifest/overview/preflight artifacts and exit before API calls.
 - `--api-key`: OpenAI API key (or set `OPENAI_API_KEY`).
 - `--verbose`: Print progress logs.
 
@@ -144,6 +154,9 @@ A typical run writes files into `--out-dir`:
 - `data/file-frequency.tsv` and `data/file-votes.json` summarizing selections.
 - `run.json` with metadata about the invocation.
 - `subtrees/gteNN/` directories (unless disabled) built from the frequency table.
+- `project-manifest.jsonl` with full file metadata used for grounding every meeting.
+- `project-overview.llm.txt`, `context-selected.txt`, and `context-stats.json` describing the bounded model-facing context.
+- `preflight.txt` with estimated request size, long-context status, and effective worker limits.
 - `project-overviews/*.txt` files collecting each bucket's `project-overview.txt` (when bucket overviews are generated).
 - Optional per-bucket `project-overview.txt` files if overview generation is available.
 

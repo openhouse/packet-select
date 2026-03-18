@@ -12,4 +12,15 @@ if [[ -f "$REPO_ROOT/.env" ]]; then
   set +a
 fi
 
-node "$REPO_ROOT/bin/packet-select.js" "$@"
+NODE_OPTIONS_EXTRA=""
+if [[ -n "${PACKET_SELECT_MAX_OLD_SPACE_MB:-}" ]]; then
+  NODE_OPTIONS_EXTRA="--max-old-space-size=${PACKET_SELECT_MAX_OLD_SPACE_MB}"
+elif [[ -n "${GENERIC_MAX_OLD_SPACE_MB:-}" ]]; then
+  NODE_OPTIONS_EXTRA="--max-old-space-size=${GENERIC_MAX_OLD_SPACE_MB}"
+fi
+
+if [[ -n "$NODE_OPTIONS_EXTRA" ]]; then
+  node $NODE_OPTIONS_EXTRA "$REPO_ROOT/bin/packet-select.js" "$@"
+else
+  node "$REPO_ROOT/bin/packet-select.js" "$@"
+fi
