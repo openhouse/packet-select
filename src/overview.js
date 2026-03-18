@@ -2,8 +2,8 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { spawn } from "node:child_process";
 import { listProjectFiles, ensureTrailingNewline, logInfo } from "./utils.js";
-
-const MAX_OVERVIEW_CHARS = 80000;
+import { fitOverviewToTokenBudget, writeContextArtifacts } from "./contextBudget.js";
+import { buildProjectManifest, formatManifestJsonl } from "./manifest.js";
 
 async function fileExists(p) {
   try {
@@ -25,18 +25,18 @@ async function runScript(scriptPath, cwd) {
   });
 }
 
-export async function resolveOverview({ srcRoot, overviewFileFlag, verbose }) {
+export async function resolveOverview({ srcRoot, overviewFileFlag, verbose, maxOverviewTokens, outDir, promptText }) {
   const defaultOverview = path.join(srcRoot, "project-overview.txt");
   let overviewPath = null;
-  let overviewText = null;
+  let archivalOverviewText = null;
 
   if (overviewFileFlag) {
     overviewPath = overviewFileFlag;
-    overviewText = await fs.readFile(overviewFileFlag, "utf8");
+    archivalOverviewText = await fs.readFile(overviewFileFlag, "utf8");
     logInfo(verbose, `Using overview from ${overviewFileFlag}`);
   } else if (await fileExists(defaultOverview)) {
     overviewPath = defaultOverview;
-    overviewText = await fs.readFile(defaultOverview, "utf8");
+    archivalOverviewText = await fs.readFile(defaultOverview, "utf8");
     logInfo(verbose, `Using existing overview at ${defaultOverview}`);
   } else {
     const scriptInRoot = path.join(srcRoot, "scripts", "generate-overview.sh");
@@ -47,25 +47,45 @@ export async function resolveOverview({ srcRoot, overviewFileFlag, verbose }) {
       await runScript(scriptPath, srcRoot);
       if (await fileExists(defaultOverview)) {
         overviewPath = defaultOverview;
-        overviewText = await fs.readFile(defaultOverview, "utf8");
+        archivalOverviewText = await fs.readFile(defaultOverview, "utf8");
       }
     }
   }
 
-  if (!overviewText) {
+  if (!archivalOverviewText) {
     logInfo(verbose, "Falling back to simple file listing overview");
     const files = await listProjectFiles(srcRoot);
-    overviewText = [
+    archivalOverviewText = [
       `Simple file listing for ${srcRoot}`,
       "",
-      ...files.map((f) => `FILE ${f}`),
-    ].join("\n");
+      ...files.map((f) => `### File: ${f}\nFILE ${f}`),
+    ].join("\n\n");
   }
 
-  if (overviewText.length > MAX_OVERVIEW_CHARS) {
-    overviewText = `${overviewText.slice(0, MAX_OVERVIEW_CHARS)}\n[NOTE: overview truncated to ${MAX_OVERVIEW_CHARS} characters for model context.]`;
-  }
+  const manifestRecords = await buildProjectManifest(srcRoot);
+  const manifestText = formatManifestJsonl(manifestRecords);
+  const { text: overviewText, stats } = fitOverviewToTokenBudget({
+    overviewText: archivalOverviewText,
+    promptText,
+    manifestRecords,
+    maxOverviewTokens,
+  });
 
-  overviewText = ensureTrailingNewline(overviewText);
-  return { overviewPath, overviewText };
+  const llmOverviewPath = path.join(outDir, "project-overview.llm.txt");
+  const manifestPath = path.join(outDir, "project-manifest.jsonl");
+  await fs.writeFile(llmOverviewPath, ensureTrailingNewline(overviewText), "utf8");
+  await fs.writeFile(manifestPath, manifestText, "utf8");
+  await writeContextArtifacts({ outDir, overviewText, stats: { ...stats, overviewPath, manifestPath } });
+
+  return {
+    overviewPath,
+    archivalOverviewPath: overviewPath,
+    archivalOverviewText: ensureTrailingNewline(archivalOverviewText),
+    overviewText,
+    llmOverviewPath,
+    manifestPath,
+    manifestRecords,
+    manifestText,
+    overviewStats: stats,
+  };
 }
