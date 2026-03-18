@@ -33,14 +33,22 @@ function buildPathTerms(promptText = "") {
   return new Set((promptText.toLowerCase().match(/[a-z0-9_.\-/]+/g) || []).filter((term) => term.length >= 3));
 }
 
-function fileImportanceScore(filePath) {
+function fileImportanceScore(filePath, meta = {}) {
   const lower = filePath.toLowerCase();
+  const type = String(meta.type || "").toLowerCase();
   let score = 0;
-  if (/readme|package\.json|tsconfig|pyproject|cargo\.toml|makefile|dockerfile/.test(lower)) score += 8;
-  if (/src\//.test(lower)) score += 5;
+  if (/bill|legis|ordinance|statute|resolution|policy|memo|letter|minutes|agenda|manifest|readme|report|transcript|brief/.test(lower)) score += 16;
+  if (/readme|package\.json|tsconfig|pyproject|cargo\.toml|makefile|dockerfile/.test(lower)) score += 12;
+  if (/docs\//.test(lower)) score += 9;
+  if (/src\//.test(lower)) score += 8;
+  if (/meeting|council|board|committee|legal|compliance|governance/.test(lower)) score += 8;
   if (/test|spec/.test(lower)) score += 3;
-  if (/docs\//.test(lower)) score += 2;
-  if (/\.md$|\.json$|\.ya?ml$|\.toml$|\.js$|\.ts$|\.py$/.test(lower)) score += 2;
+  if (/\.md$|\.txt$|\.json$|\.ya?ml$|\.toml$|\.js$|\.ts$|\.py$|\.pdf$/.test(lower)) score += 4;
+  if (/chat|whatsapp|slack|discord|telegram|signal|sms|direct-message|dm\b/.test(lower)) score -= 12;
+  if (/audio|video|media|recording|screenshot|image|photo|camera|capture|voice/.test(lower)) score -= 10;
+  if (/\.(mp3|wav|m4a|mp4|mov|avi|jpg|jpeg|png|gif|webp|heic|aac)$/.test(lower)) score -= 18;
+  if (/pdf|markdown|text|json|yaml|toml|javascript|typescript|python/.test(type)) score += 4;
+  if (/audio|video|image|binary/.test(type)) score -= 10;
   return score;
 }
 
@@ -77,7 +85,7 @@ export function fitOverviewToTokenBudget({ overviewText, promptText, manifestRec
     const meta = manifestMap.get(section.filePath);
     const recency = meta?.mtimeMs || 0;
     const relevance = relevanceScore(section.filePath, promptTerms);
-    const importance = fileImportanceScore(section.filePath);
+    const importance = fileImportanceScore(section.filePath, meta);
     return {
       ...section,
       recency,
@@ -89,11 +97,11 @@ export function fitOverviewToTokenBudget({ overviewText, promptText, manifestRec
   });
 
   let candidates;
-  if (scoredSections.some((section) => section.recency > 0 || section.relevance > 0 || section.importance > 0)) {
+  if (scoredSections.some((section) => section.recency > 0 || section.relevance > 0 || section.importance !== 0)) {
     candidates = [...scoredSections].sort((a, b) => (
-      (b.recency - a.recency) ||
-      (b.relevance - a.relevance) ||
       (b.importance - a.importance) ||
+      (b.relevance - a.relevance) ||
+      (b.recency - a.recency) ||
       (a.ordinal - b.ordinal)
     ));
   } else {

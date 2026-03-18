@@ -49,10 +49,14 @@ export function loadConfig(argv) {
       "tpm-budget": { type: "string" },
       "max-tokens-per-minute": { type: "string" },
       "max-requests-per-minute": { type: "string" },
+      "scheduler-utilization": { type: "string" },
       "request-timeout-ms": { type: "string" },
       "timeout-ms": { type: "string" },
       "max-retries": { type: "string" },
       "dry-run": { type: "boolean" },
+      "prompt-cache-key": { type: "string" },
+      "prompt-cache-retention": { type: "string" },
+      "no-prompt-cache": { type: "boolean" },
       verbose: { type: "boolean" },
       help: { type: "boolean", short: "h" },
     },
@@ -86,9 +90,13 @@ export function loadConfig(argv) {
   const maxOutputTokens = Number(values["max-output-tokens"] || reserveOutputTokens);
   const tpmLimit = values["tpm-limit"] || values["tpm-budget"] || values["max-tokens-per-minute"] || process.env.OPENAI_TPM_LIMIT || null;
   const rpmLimit = values["max-requests-per-minute"] || process.env.OPENAI_RPM_LIMIT || null;
+  const schedulerUtilization = Number(values["scheduler-utilization"] || process.env.PACKET_SELECT_SCHEDULER_UTILIZATION || 0.8);
   const requestTimeoutMs = Number(values["request-timeout-ms"] || values["timeout-ms"] || 900000);
   const maxRetries = Number(values["max-retries"] || 5);
   const dryRun = Boolean(values["dry-run"]);
+  const promptCacheKey = values["prompt-cache-key"] || process.env.PACKET_SELECT_PROMPT_CACHE_KEY || null;
+  const promptCacheRetention = values["prompt-cache-retention"] || process.env.PACKET_SELECT_PROMPT_CACHE_RETENTION || null;
+  const noPromptCache = Boolean(values["no-prompt-cache"]);
 
   required(srcRoot, "--src-root is required");
   if (!promptText && !promptFile) throw new Error("Exactly one of --prompt or --prompt-file is required");
@@ -97,7 +105,7 @@ export function loadConfig(argv) {
   if (!Number.isInteger(sampleSize) || sampleSize < 1) throw new Error("--sample-size must be a positive integer");
   if (meetingSize !== undefined && (!Number.isInteger(meetingSize) || meetingSize < 1)) throw new Error("--meeting-size must be a positive integer");
   if (!Number.isInteger(workers) || workers < 1) throw new Error("--workers must be a positive integer");
-  if (!apiKey) throw new Error("An OpenAI API key is required via --api-key or OPENAI_API_KEY");
+  if (!apiKey && !dryRun) throw new Error("An OpenAI API key is required via --api-key or OPENAI_API_KEY unless --dry-run is used");
   if (!ALLOWED_REASONING_EFFORTS.includes(requestedReasoningEffort)) {
     throw new Error(`Invalid --reasoning-effort "${requestedReasoningEffort}". Expected one of: ${ALLOWED_REASONING_EFFORTS.join(", ")}.`);
   }
@@ -107,9 +115,10 @@ export function loadConfig(argv) {
     if (k < 2) throw new Error("--meeting-size must be at least 2 when using --cross-pollinate");
     if (k > curators.length) throw new Error(`--meeting-size (${k}) cannot exceed number of curators (${curators.length})`);
   }
-  for (const [name, value] of [["--max-input-tokens", maxInputTokens], ["--max-overview-tokens", maxOverviewTokens], ["--reserve-output-tokens", reserveOutputTokens], ["--max-output-tokens", maxOutputTokens], ["--request-timeout-ms", requestTimeoutMs], ["--max-retries", maxRetries]]) {
+  for (const [name, value] of [["--max-input-tokens", maxInputTokens], ["--max-overview-tokens", maxOverviewTokens], ["--reserve-output-tokens", reserveOutputTokens], ["--max-output-tokens", maxOutputTokens], ["--request-timeout-ms", requestTimeoutMs], ["--max-retries", maxRetries], ["--scheduler-utilization", schedulerUtilization]]) {
     if (!Number.isFinite(value) || value < 0) throw new Error(`${name} must be a non-negative number`);
   }
+  if (schedulerUtilization <= 0 || schedulerUtilization > 1) throw new Error("--scheduler-utilization must be between 0 and 1");
 
   return {
     help: false,
@@ -137,9 +146,13 @@ export function loadConfig(argv) {
     maxOutputTokens,
     tpmLimit: tpmLimit === null ? null : Number(tpmLimit),
     rpmLimit: rpmLimit === null ? null : Number(rpmLimit),
+    schedulerUtilization,
     requestTimeoutMs,
     maxRetries,
     dryRun,
+    promptCacheKey,
+    promptCacheRetention,
+    noPromptCache,
   };
 }
 
@@ -153,5 +166,6 @@ export function usage() {
   [--no-build-subtrees] [--no-bucket-overviews] [--api-key <key>] [--verbose] \n\
   [--cross-pollinate] [--reasoning-effort <none|minimal|low|medium|high|auto>] \n\
   [--max-input-tokens <int>] [--max-overview-tokens <int>] [--reserve-output-tokens <int>] [--max-output-tokens <int>] \n\
-  [--tpm-limit <int>] [--max-requests-per-minute <int>] [--request-timeout-ms <int>] [--max-retries <int>] [--dry-run]`;
+  [--tpm-limit <int>] [--max-requests-per-minute <int>] [--scheduler-utilization <0-1>] [--request-timeout-ms <int>] [--max-retries <int>] [--dry-run] \n\
+  [--prompt-cache-key <string>] [--prompt-cache-retention <ttl>] [--no-prompt-cache]`;
 }
