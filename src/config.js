@@ -8,12 +8,32 @@ function required(value, message) {
   return value;
 }
 
+export const MODEL_PROFILES = {
+  "gpt-5.4": { maxInputTokens: 400000, maxOutputTokens: 128000, highReasoningReserve: 65536 },
+  "gpt-5": { maxInputTokens: 400000, maxOutputTokens: 128000, highReasoningReserve: 65536 },
+};
+
+function resolveModelProfile(model) {
+  const exact = MODEL_PROFILES[model];
+  if (exact) return exact;
+  if (typeof model === "string" && model.startsWith("gpt-5")) return MODEL_PROFILES["gpt-5"];
+  return { maxInputTokens: 200000, maxOutputTokens: 32768, highReasoningReserve: 16384 };
+}
+
 export function normalizeReasoningEffort(model, requested) {
   const isGpt5 = typeof model === "string" && model.startsWith("gpt-5");
   if (!isGpt5) return null;
-  if (requested === "auto") return "low";
+  if (requested === "auto") return "high";
   if (requested === "minimal") return "low";
   return requested;
+}
+
+export function deriveOutputReserve({ requestedReasoningEffort, reasoningEffort, reserveOutputTokens, maxOutputTokens, model }) {
+  const profile = resolveModelProfile(model);
+  if (reserveOutputTokens != null) return reserveOutputTokens;
+  if (maxOutputTokens != null) return Math.max(maxOutputTokens, reasoningEffort === "high" || requestedReasoningEffort === "high" ? profile.highReasoningReserve : Math.min(profile.maxOutputTokens, 8192));
+  if (reasoningEffort === "high" || requestedReasoningEffort === "high") return profile.highReasoningReserve;
+  return 8192;
 }
 
 export function loadConfig(argv) {
@@ -73,7 +93,8 @@ export function loadConfig(argv) {
   const sampleSize = Number(values["sample-size"] || values.samples || 8);
   const meetingSize = values["meeting-size"] !== undefined ? Number(values["meeting-size"]) : undefined;
   const workers = Number(values.workers || 1);
-  const model = values.model || "gpt-4.1-mini";
+  const model = values.model || "gpt-5.4";
+  const profile = resolveModelProfile(model);
   const outDir = path.resolve(values["out-dir"] || "./packet-select-out");
   const overviewFile = values["overview-file"] ? path.resolve(values["overview-file"]) : null;
   const buildSubtreesBin = values["build-subtrees-bin"] || null;
@@ -81,13 +102,15 @@ export function loadConfig(argv) {
   const noBucketOverviews = Boolean(values["no-bucket-overviews"] || values["no-overview-subtrees"]);
   const apiKey = values["api-key"] || process.env.OPENAI_API_KEY || "";
   const verbose = Boolean(values.verbose);
-  const requestedReasoningEffort = values["reasoning-effort"] || "low";
+  const requestedReasoningEffort = values["reasoning-effort"] || "high";
   const reasoningEffort = normalizeReasoningEffort(model, requestedReasoningEffort);
   const crossPollinate = Boolean(values["cross-pollinate"]);
-  const maxInputTokens = Number(values["max-input-tokens"] || values["target-input-tokens"] || 200000);
-  const maxOverviewTokens = Number(values["max-overview-tokens"] || Math.min(60000, Math.floor(maxInputTokens * 0.35)));
-  const reserveOutputTokens = Number(values["reserve-output-tokens"] || values["max-output-tokens"] || 4096);
-  const maxOutputTokens = Number(values["max-output-tokens"] || reserveOutputTokens);
+  const maxInputTokens = Number(values["max-input-tokens"] || values["target-input-tokens"] || profile.maxInputTokens);
+  const maxOverviewTokens = values["max-overview-tokens"] !== undefined ? Number(values["max-overview-tokens"]) : null;
+  const configuredMaxOutputTokens = values["max-output-tokens"] !== undefined ? Number(values["max-output-tokens"]) : null;
+  const configuredReserveOutputTokens = values["reserve-output-tokens"] !== undefined ? Number(values["reserve-output-tokens"]) : null;
+  const reserveOutputTokens = deriveOutputReserve({ requestedReasoningEffort, reasoningEffort, reserveOutputTokens: configuredReserveOutputTokens, maxOutputTokens: configuredMaxOutputTokens, model });
+  const maxOutputTokens = configuredMaxOutputTokens ?? Math.min(profile.maxOutputTokens, reserveOutputTokens);
   const tpmLimit = values["tpm-limit"] || values["tpm-budget"] || values["max-tokens-per-minute"] || process.env.OPENAI_TPM_LIMIT || null;
   const rpmLimit = values["max-requests-per-minute"] || process.env.OPENAI_RPM_LIMIT || null;
   const schedulerUtilization = Number(values["scheduler-utilization"] || process.env.PACKET_SELECT_SCHEDULER_UTILIZATION || 0.8);
@@ -115,9 +138,10 @@ export function loadConfig(argv) {
     if (k < 2) throw new Error("--meeting-size must be at least 2 when using --cross-pollinate");
     if (k > curators.length) throw new Error(`--meeting-size (${k}) cannot exceed number of curators (${curators.length})`);
   }
-  for (const [name, value] of [["--max-input-tokens", maxInputTokens], ["--max-overview-tokens", maxOverviewTokens], ["--reserve-output-tokens", reserveOutputTokens], ["--max-output-tokens", maxOutputTokens], ["--request-timeout-ms", requestTimeoutMs], ["--max-retries", maxRetries], ["--scheduler-utilization", schedulerUtilization]]) {
+  for (const [name, value] of [["--max-input-tokens", maxInputTokens], ["--reserve-output-tokens", reserveOutputTokens], ["--max-output-tokens", maxOutputTokens], ["--request-timeout-ms", requestTimeoutMs], ["--max-retries", maxRetries], ["--scheduler-utilization", schedulerUtilization]]) {
     if (!Number.isFinite(value) || value < 0) throw new Error(`${name} must be a non-negative number`);
   }
+  if (maxOverviewTokens !== null && (!Number.isFinite(maxOverviewTokens) || maxOverviewTokens < 0)) throw new Error("--max-overview-tokens must be a non-negative number");
   if (schedulerUtilization <= 0 || schedulerUtilization > 1) throw new Error("--scheduler-utilization must be between 0 and 1");
 
   return {
@@ -129,6 +153,7 @@ export function loadConfig(argv) {
     sampleSize,
     workers,
     model,
+    modelProfile: profile,
     outDir,
     overviewFile,
     buildSubtreesBin,

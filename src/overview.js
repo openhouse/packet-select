@@ -1,7 +1,7 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { spawn } from "node:child_process";
-import { listProjectFiles, ensureTrailingNewline, logInfo } from "./utils.js";
+import { listProjectFiles, ensureTrailingNewline, logInfo, buildExcludedRoots } from "./utils.js";
 import { fitOverviewToTokenBudget, writeContextArtifacts } from "./contextBudget.js";
 import { buildProjectManifest, formatManifestJsonl } from "./manifest.js";
 
@@ -25,7 +25,16 @@ async function runScript(scriptPath, cwd) {
   });
 }
 
+export function deriveOverviewBudget({ maxInputTokens, fixedRequestTokens, reserveOutputTokens, safetyMarginTokens = 2048, maxOverviewTokens = null }) {
+  const remaining = maxInputTokens - fixedRequestTokens - reserveOutputTokens - safetyMarginTokens;
+  if (remaining <= 0) {
+    throw new Error(`No input budget remains for project overview after reserving fixed request tokens (${fixedRequestTokens}), output/reasoning reserve (${reserveOutputTokens}), and safety margin (${safetyMarginTokens}).`);
+  }
+  return maxOverviewTokens == null ? remaining : Math.max(0, Math.min(maxOverviewTokens, remaining));
+}
+
 export async function resolveOverview({ srcRoot, overviewFileFlag, verbose, maxOverviewTokens, outDir, promptText }) {
+  const excludedRoots = buildExcludedRoots({ srcRoot, outDir });
   const defaultOverview = path.join(srcRoot, "project-overview.txt");
   let overviewPath = null;
   let archivalOverviewText = null;
@@ -54,7 +63,7 @@ export async function resolveOverview({ srcRoot, overviewFileFlag, verbose, maxO
 
   if (!archivalOverviewText) {
     logInfo(verbose, "Falling back to simple file listing overview");
-    const files = await listProjectFiles(srcRoot);
+    const files = await listProjectFiles(srcRoot, { excludedRoots });
     archivalOverviewText = [
       `Simple file listing for ${srcRoot}`,
       "",
@@ -62,20 +71,20 @@ export async function resolveOverview({ srcRoot, overviewFileFlag, verbose, maxO
     ].join("\n\n");
   }
 
-  const manifestRecords = await buildProjectManifest(srcRoot);
+  const manifestRecords = await buildProjectManifest(srcRoot, { excludedRoots });
   const manifestText = formatManifestJsonl(manifestRecords);
   const { text: overviewText, stats } = fitOverviewToTokenBudget({
     overviewText: archivalOverviewText,
     promptText,
     manifestRecords,
-    maxOverviewTokens,
+    maxOverviewTokens: maxOverviewTokens ?? Number.MAX_SAFE_INTEGER,
   });
 
   const llmOverviewPath = path.join(outDir, "project-overview.llm.txt");
   const manifestPath = path.join(outDir, "project-manifest.jsonl");
   await fs.writeFile(llmOverviewPath, ensureTrailingNewline(overviewText), "utf8");
   await fs.writeFile(manifestPath, manifestText, "utf8");
-  await writeContextArtifacts({ outDir, overviewText, stats: { ...stats, overviewPath, manifestPath } });
+  await writeContextArtifacts({ outDir, overviewText, stats: { ...stats, overviewPath, manifestPath, excludedRoots: [...excludedRoots] } });
 
   return {
     overviewPath,
@@ -87,5 +96,6 @@ export async function resolveOverview({ srcRoot, overviewFileFlag, verbose, maxO
     manifestRecords,
     manifestText,
     overviewStats: stats,
+    excludedRoots,
   };
 }

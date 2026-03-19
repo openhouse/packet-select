@@ -3,6 +3,9 @@ import path from "node:path";
 import { ensureTrailingNewline, normalizeRelativePath } from "./utils.js";
 
 const DEFAULT_CHARS_PER_TOKEN = 4;
+const BINARY_EXTENSION_PATTERN = /\.(mp3|m4a|wav|aac|mp4|mov|avi|jpg|jpeg|png|gif|webp|heic|zip|bin)$/i;
+const VOICE_SPECIMEN_PATTERN = /(transcript|otter|minutes|meeting|notes?|email|letter|memo|chat|slack|whatsapp|signal|telegram|conversation|interview|call|remarks|statement|draft|vtt|ocr)/i;
+const REFERENCE_PATTERN = /(policy|legal|ordinance|statute|resolution|compliance|governance|report|brief|readme|manifest)/i;
 
 export function estimateTokens(text) {
   if (!text) return 0;
@@ -37,18 +40,15 @@ function fileImportanceScore(filePath, meta = {}) {
   const lower = filePath.toLowerCase();
   const type = String(meta.type || "").toLowerCase();
   let score = 0;
-  if (/bill|legis|ordinance|statute|resolution|policy|memo|letter|minutes|agenda|manifest|readme|report|transcript|brief/.test(lower)) score += 16;
-  if (/readme|package\.json|tsconfig|pyproject|cargo\.toml|makefile|dockerfile/.test(lower)) score += 12;
-  if (/docs\//.test(lower)) score += 9;
-  if (/src\//.test(lower)) score += 8;
-  if (/meeting|council|board|committee|legal|compliance|governance/.test(lower)) score += 8;
-  if (/test|spec/.test(lower)) score += 3;
+  if (REFERENCE_PATTERN.test(lower)) score += 10;
+  if (/readme|package\.json|tsconfig|pyproject|cargo\.toml|makefile|dockerfile/.test(lower)) score += 8;
+  if (/docs\//.test(lower)) score += 4;
+  if (/src\//.test(lower)) score += 5;
+  if (VOICE_SPECIMEN_PATTERN.test(lower)) score += 14;
   if (/\.md$|\.txt$|\.json$|\.ya?ml$|\.toml$|\.js$|\.ts$|\.py$|\.pdf$/.test(lower)) score += 4;
-  if (/chat|whatsapp|slack|discord|telegram|signal|sms|direct-message|dm\b/.test(lower)) score -= 12;
-  if (/audio|video|media|recording|screenshot|image|photo|camera|capture|voice/.test(lower)) score -= 10;
-  if (/\.(mp3|wav|m4a|mp4|mov|avi|jpg|jpeg|png|gif|webp|heic|aac)$/.test(lower)) score -= 18;
+  if (BINARY_EXTENSION_PATTERN.test(lower)) score -= 24;
+  if (/audio|video|image|binary/.test(type)) score -= 18;
   if (/pdf|markdown|text|json|yaml|toml|javascript|typescript|python/.test(type)) score += 4;
-  if (/audio|video|image|binary/.test(type)) score -= 10;
   return score;
 }
 
@@ -61,18 +61,20 @@ function relevanceScore(filePath, promptTerms) {
   return score;
 }
 
-function balancedOrder(sections) {
-  if (sections.length <= 2) return sections;
-  const result = [];
-  let left = 0;
-  let right = sections.length - 1;
-  while (left <= right) {
-    result.push(sections[right]);
-    if (left !== right) result.push(sections[left]);
-    left += 1;
-    right -= 1;
-  }
-  return result;
+function representativenessScore(section, sections) {
+  const dir = section.filePath.split("/")[0] || "";
+  const sameDir = sections.filter((candidate) => candidate.filePath.startsWith(`${dir}/`) || candidate.filePath === dir).length;
+  return Math.min(8, sameDir);
+}
+
+function genreForSection(section, meta = {}) {
+  const lower = section.filePath.toLowerCase();
+  const type = String(meta.type || "").toLowerCase();
+  if (BINARY_EXTENSION_PATTERN.test(lower) || /audio|video|image|binary/.test(type)) return "binary";
+  if (VOICE_SPECIMEN_PATTERN.test(lower)) return "voice";
+  if (REFERENCE_PATTERN.test(lower)) return "reference";
+  if (/src\//.test(lower)) return "code";
+  return "general";
 }
 
 export function fitOverviewToTokenBudget({ overviewText, promptText, manifestRecords = [], maxOverviewTokens, reservedTokens = 0 }) {
@@ -81,37 +83,45 @@ export function fitOverviewToTokenBudget({ overviewText, promptText, manifestRec
   const promptTerms = buildPathTerms(promptText);
   const manifestMap = new Map(manifestRecords.map((record) => [record.path, record]));
 
-  const scoredSections = fileBlocks.map((section, idx) => {
+  const scoredSections = fileBlocks.map((section, idx, all) => {
     const meta = manifestMap.get(section.filePath);
     const recency = meta?.mtimeMs || 0;
     const relevance = relevanceScore(section.filePath, promptTerms);
     const importance = fileImportanceScore(section.filePath, meta);
+    const genre = genreForSection(section, meta);
+    const representativeness = representativenessScore(section, all);
+    const voice = genre === "voice" ? 12 : 0;
+    const centrality = (relevance > 0 ? 4 : 0) + representativeness;
     return {
       ...section,
       recency,
       relevance,
       importance,
+      genre,
+      representativeness,
+      voice,
+      centrality,
       tokens: estimateTokens(section.block),
       ordinal: idx,
+      score: importance + relevance + voice + centrality + Math.min(6, Math.floor(recency / 1_000_000_000)),
     };
   });
 
-  let candidates;
-  if (scoredSections.some((section) => section.recency > 0 || section.relevance > 0 || section.importance !== 0)) {
-    candidates = [...scoredSections].sort((a, b) => (
-      (b.importance - a.importance) ||
-      (b.relevance - a.relevance) ||
-      (b.recency - a.recency) ||
-      (a.ordinal - b.ordinal)
-    ));
-  } else {
-    candidates = balancedOrder(scoredSections);
-  }
+  const candidates = [...scoredSections].sort((a, b) => (
+    (b.score - a.score) ||
+    (b.voice - a.voice) ||
+    (b.relevance - a.relevance) ||
+    (b.recency - a.recency) ||
+    (a.ordinal - b.ordinal)
+  ));
 
   const omissionNotice = "[NOTE: Overview is token-budgeted. Additional sections were omitted; use the manifest for the full file list.]";
   const parts = [];
   let usedTokens = 0;
   const selectedPaths = [];
+  const genreCounts = new Map();
+  const targetVoiceSelections = Math.max(1, Math.min(6, Math.ceil(fileBlocks.length * 0.2)));
+
   const addPart = (text) => {
     const normalized = text.trim();
     if (!normalized) return false;
@@ -123,14 +133,25 @@ export function fitOverviewToTokenBudget({ overviewText, promptText, manifestRec
   };
 
   addPart(directorySection || "Project overview digest unavailable.");
-  for (const section of candidates) {
-    if (usedTokens + section.tokens + estimateTokens(omissionNotice) + reservedTokens > maxOverviewTokens) {
-      continue;
-    }
+
+  const ordered = [
+    ...candidates.filter((section) => section.genre === "voice"),
+    ...candidates.filter((section) => section.genre !== "voice"),
+  ];
+
+  for (const section of ordered) {
+    const currentGenreCount = genreCounts.get(section.genre) || 0;
+    const hasVoiceQuota = (genreCounts.get("voice") || 0) < targetVoiceSelections;
+    const shouldPrioritize = section.genre === "voice" || currentGenreCount === 0 || !hasVoiceQuota;
+    const neededReserve = estimateTokens(omissionNotice) + reservedTokens;
+    if (!shouldPrioritize && section.genre === "binary") continue;
+    if (usedTokens + section.tokens + neededReserve > maxOverviewTokens) continue;
     if (addPart(section.block)) {
       selectedPaths.push(section.filePath);
+      genreCounts.set(section.genre, currentGenreCount + 1);
     }
   }
+
   addPart(omissionNotice);
 
   const text = ensureTrailingNewline(parts.join("\n\n"));
@@ -143,6 +164,7 @@ export function fitOverviewToTokenBudget({ overviewText, promptText, manifestRec
       directoryIncluded: Boolean(directorySection),
       omittedSections: Math.max(0, fileBlocks.length - selectedPaths.length),
       approxTokens: estimateTokens(text),
+      genreCounts: Object.fromEntries(genreCounts),
     },
   };
 }
