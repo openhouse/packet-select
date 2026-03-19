@@ -485,22 +485,17 @@ else
     case "$MIME_TYPE" in
       application/pdf)
         if command -v pdftotext >/dev/null 2>&1; then
-          PDF_CONTENT=$(pdftotext "$file" - 2>/dev/null)
-          if [ -n "$PDF_CONTENT" ]; then
-            while IFS= read -r line; do
-              if [ "$STOP_OUTPUT" = true ]; then break; fi
-              safe_echo "$line"
-            done <<< "$PDF_CONTENT"
+          PDF_TEMP=$(mktemp /tmp/pdftotext.XXXXXX)
+          pdftotext "$file" - 2>/dev/null | tr -d '\000' > "$PDF_TEMP"
+          if [ -s "$PDF_TEMP" ]; then
+            safe_print_command < "$PDF_TEMP"
           else
             safe_echo "(No embedded text found. Attempting OCR with tesseract...)"
             if command -v tesseract >/dev/null 2>&1; then
               TEMP_TXT=$(mktemp /tmp/ocr.XXXXXX)
               tesseract "$file" "$TEMP_TXT" 2>/dev/null
               if [ -f "${TEMP_TXT}.txt" ]; then
-                while IFS= read -r line; do
-                  if [ "$STOP_OUTPUT" = true ]; then break; fi
-                  safe_echo "$line"
-                done < "${TEMP_TXT}.txt"
+                tr -d '\000' < "${TEMP_TXT}.txt" | safe_print_command
                 rm -f "${TEMP_TXT}.txt"
               else
                 safe_echo "(Tesseract failed or produced no output.)"
@@ -509,6 +504,7 @@ else
               safe_echo "(Tesseract not installed, cannot OCR scanned PDFs.)"
             fi
           fi
+          rm -f "$PDF_TEMP"
         else
           safe_echo "(pdftotext not installed, skipping PDF extraction...)"
         fi

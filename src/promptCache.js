@@ -1,5 +1,7 @@
 import crypto from "node:crypto";
 
+export const DEFAULT_PROMPT_CACHE_RETENTION = "24h";
+
 export const MAX_PROMPT_CACHE_KEY_LENGTH = 64;
 const DEFAULT_PROMPT_CACHE_PREFIX = "ps:v1:";
 const PROMPT_CACHE_KEY_PATTERN = /^[\x20-\x7E]+$/;
