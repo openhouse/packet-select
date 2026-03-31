@@ -3,7 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
 import { strict as assert } from "node:assert";
-import { buildMeetingInput, buildMeetingRequest, estimateRequestTokens, isDeterministicRequestError, parseMeetingResponse, runMeeting, MeetingIncompleteError } from "../src/meeting.js";
+import { buildMeetingInput, buildMeetingRequest, estimateRequestTokens, extractResponseOutputText, isDeterministicRequestError, parseMeetingResponse, runMeeting, MeetingIncompleteError } from "../src/meeting.js";
 import { buildPromptCacheKey, sanitizePromptCacheKey, DEFAULT_PROMPT_CACHE_RETENTION } from "../src/promptCache.js";
 
 function makeRequest() {
@@ -142,6 +142,13 @@ test("parse failure with completed status writes diagnostics with usage metadata
   assert.equal(diagnostic.status, "completed");
   assert.equal(diagnostic.usage.input_tokens, 100);
   assert.equal(diagnostic.parseError.name, "SyntaxError");
+});
+
+test("extractResponseOutputText falls back to output content array", () => {
+  const outputText = extractResponseOutputText({
+    output: [{ content: [{ type: "output_text", text: "{\"ok\":true}" }] }],
+  });
+  assert.equal(outputText, "{\"ok\":true}");
 });
 
 test("runMeeting auto-escalates output budget before succeeding", async () => {

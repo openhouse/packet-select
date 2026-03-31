@@ -42,6 +42,16 @@ export function loadConfig(argv) {
   const { values } = parseArgs({
     args: argv,
     options: {
+      batch: { type: "boolean" },
+      "execution-mode": { type: "string" },
+      "api-mode": { type: "string" },
+      "batch-wait": { type: "boolean" },
+      "batch-submit-only": { type: "boolean" },
+      "batch-collect": { type: "boolean" },
+      "batch-state-file": { type: "string" },
+      "resume-batch-id": { type: "string" },
+      "batch-id": { type: "string" },
+      "batch-poll-interval-ms": { type: "string" },
       "src-root": { type: "string", short: "s" },
       "prompt-file": { type: "string", short: "p" },
       prompt: { type: "string" },
@@ -117,14 +127,23 @@ export function loadConfig(argv) {
   const requestTimeoutMs = Number(values["request-timeout-ms"] || values["timeout-ms"] || 900000);
   const maxRetries = Number(values["max-retries"] || 5);
   const dryRun = Boolean(values["dry-run"]);
+  const executionModeRaw = values["execution-mode"] || (values["api-mode"] === "batch-submit" || values["api-mode"] === "batch-collect" ? "batch" : null) || (values.batch ? "batch" : "sync");
+  const batchSubmitOnly = Boolean(values["batch-submit-only"]) || values["api-mode"] === "batch-submit";
+  const explicitBatchCollect = Boolean(values["batch-collect"]) || values["api-mode"] === "batch-collect";
+  const batchWait = Boolean(values["batch-wait"]);
+  const batchPollIntervalMs = Number(values["batch-poll-interval-ms"] || 30000);
+  const resumeBatchId = values["resume-batch-id"] || values["batch-id"] || null;
+  const executionMode = executionModeRaw === "batch" || explicitBatchCollect ? "batch" : "sync";
   const promptCacheKey = values["prompt-cache-key"] || process.env.PACKET_SELECT_PROMPT_CACHE_KEY || null;
   const promptCacheRetention = values["prompt-cache-retention"] || process.env.PACKET_SELECT_PROMPT_CACHE_RETENTION || null;
   const noPromptCache = Boolean(values["no-prompt-cache"]);
 
-  required(srcRoot, "--src-root is required");
-  if (!promptText && !promptFile) throw new Error("Exactly one of --prompt or --prompt-file is required");
-  if (promptText && promptFile) throw new Error("Use only one of --prompt or --prompt-file");
-  required(curatorsRaw, "--curators is required");
+  if (!explicitBatchCollect) {
+    required(srcRoot, "--src-root is required");
+    if (!promptText && !promptFile) throw new Error("Exactly one of --prompt or --prompt-file is required");
+    if (promptText && promptFile) throw new Error("Use only one of --prompt or --prompt-file");
+    required(curatorsRaw, "--curators is required");
+  }
   if (!Number.isInteger(sampleSize) || sampleSize < 1) throw new Error("--sample-size must be a positive integer");
   if (meetingSize !== undefined && (!Number.isInteger(meetingSize) || meetingSize < 1)) throw new Error("--meeting-size must be a positive integer");
   if (!Number.isInteger(workers) || workers < 1) throw new Error("--workers must be a positive integer");
@@ -143,6 +162,9 @@ export function loadConfig(argv) {
   }
   if (maxOverviewTokens !== null && (!Number.isFinite(maxOverviewTokens) || maxOverviewTokens < 0)) throw new Error("--max-overview-tokens must be a non-negative number");
   if (schedulerUtilization <= 0 || schedulerUtilization > 1) throw new Error("--scheduler-utilization must be between 0 and 1");
+  if (!Number.isFinite(batchPollIntervalMs) || batchPollIntervalMs < 1000) throw new Error("--batch-poll-interval-ms must be >= 1000");
+
+  const batchStateFile = path.resolve(values["batch-state-file"] || path.join(outDir, "batch", "state.json"));
 
   return {
     help: false,
@@ -178,6 +200,13 @@ export function loadConfig(argv) {
     promptCacheKey,
     promptCacheRetention,
     noPromptCache,
+    executionMode,
+    batchSubmitOnly,
+    batchWait,
+    batchPollIntervalMs,
+    batchStateFile,
+    resumeBatchId,
+    batchCollectOnly: explicitBatchCollect,
   };
 }
 
@@ -192,5 +221,6 @@ export function usage() {
   [--cross-pollinate] [--reasoning-effort <none|minimal|low|medium|high|auto>] \n\
   [--max-input-tokens <int>] [--max-overview-tokens <int>] [--reserve-output-tokens <int>] [--max-output-tokens <int>] \n\
   [--tpm-limit <int>] [--max-requests-per-minute <int>] [--scheduler-utilization <0-1>] [--request-timeout-ms <int>] [--max-retries <int>] [--dry-run] \n\
-  [--prompt-cache-key <string>] [--prompt-cache-retention <ttl>] [--no-prompt-cache]`;
+  [--prompt-cache-key <string>] [--prompt-cache-retention <ttl>] [--no-prompt-cache] \n\
+  [--execution-mode <sync|batch>] [--batch-submit-only] [--batch-collect] [--resume-batch-id <id>] [--batch-state-file <path>] [--batch-wait] [--batch-poll-interval-ms <ms>]`;
 }

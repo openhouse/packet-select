@@ -215,8 +215,21 @@ export function nextOutputTokenBudget(current, ladder = OUTPUT_RETRY_LADDER) {
   return ladder.find((value) => value > current) || null;
 }
 
+export function extractResponseOutputText(response) {
+  if (typeof response?.output_text === "string" && response.output_text.length > 0) return response.output_text;
+  const outputItems = Array.isArray(response?.output) ? response.output : [];
+  const textParts = [];
+  for (const item of outputItems) {
+    const content = Array.isArray(item?.content) ? item.content : [];
+    for (const part of content) {
+      if (part?.type === "output_text" && typeof part.text === "string") textParts.push(part.text);
+    }
+  }
+  return textParts.join("");
+}
+
 export async function parseMeetingResponse({ response, runIndex, errorsDir, maxOutputTokens, reasoningEffort, retryCount = 0, tokenCountMethod = null, promptCache = null }) {
-  const outputText = response?.output_text || "";
+  const outputText = extractResponseOutputText(response);
   const status = response?.status || null;
   if (status && status !== "completed") {
     const diagnostics = buildResponseDiagnostics({ runIndex, response, outputText, maxOutputTokens, reasoningEffort, retryCount, tokenCountMethod, promptCache });
@@ -232,6 +245,122 @@ export async function parseMeetingResponse({ response, runIndex, errorsDir, maxO
     await writeDiagnosticsArtifacts({ errorsDir, runIndex, response, outputText, diagnostics });
     throw new Error(`Failed to parse JSON for meeting ${runIndex}: ${error.message}`);
   }
+}
+
+export async function materializeMeetingResponse({
+  response,
+  runIndex,
+  sampleSize,
+  round = 1,
+  meetingMode = "group",
+  meetingSize = null,
+  curators,
+  fileSet,
+  canonicalFileMap = null,
+  minutesDir,
+  decisionsDir,
+  errorsDir,
+  verbose,
+  reasoningEffort,
+  maxOutputTokens,
+  estimatedInputTokens,
+  requestTimeoutMs,
+  promptCache,
+  tokenCountMethod = null,
+  retryCount = 0,
+  transport = "sync",
+  batch = null,
+}) {
+  const { parsed, diagnostics } = await parseMeetingResponse({
+    response,
+    runIndex,
+    errorsDir,
+    maxOutputTokens,
+    reasoningEffort,
+    retryCount,
+    tokenCountMethod,
+    promptCache,
+  });
+  const keepEntries = (parsed.decisions?.keep || []).map((item) => ({
+    path: normalizeRelativePath(item.path),
+    reason: item.reason || "",
+  })).filter((item) => item.path);
+
+  const filteredKeep = [];
+  for (const entry of keepEntries) {
+    const canonical = canonicalizeRelativePath(entry.path);
+    const resolvedPath = fileSet.has(entry.path)
+      ? entry.path
+      : (canonicalFileMap?.get(canonical) || null);
+    if (!resolvedPath) {
+      const matches = findNearestManifestMatches(entry.path, fileSet, canonicalFileMap).join(", ");
+      logWarn(`Meeting ${runIndex} referenced unknown path: ${entry.path}${matches ? ` (nearest: ${matches})` : ""}`);
+      continue;
+    }
+    filteredKeep.push({ ...entry, path: resolvedPath });
+  }
+
+  const usage = response.usage || {};
+  const responseId = response.id || null;
+  const minutesPayload = {
+    meetingIndex: runIndex,
+    sampleSize,
+    round,
+    mode: meetingMode,
+    meetingSize: meetingSize || curators.length,
+    curators,
+    prompt: "[omitted inline]",
+    summary: parsed.summary || "",
+    minutes: parsed.minutes || [],
+    request: {
+      id: responseId,
+      estimatedInputTokens,
+      inputTokens: usage.input_tokens || null,
+      cachedTokens: usage.input_tokens_details?.cached_tokens || null,
+      outputTokens: usage.output_tokens || null,
+      reasoningTokens: usage.output_tokens_details?.reasoning_tokens || null,
+      status: response.status || null,
+      incompleteDetails: response.incomplete_details || null,
+      retries: retryCount,
+      timeoutMs: requestTimeoutMs,
+      tokenCountMethod,
+      promptCache: promptCache?.key ? { enabled: true, retention: promptCache.retention || null, status: usage.input_tokens_details?.cached_tokens ? "hit_or_partial_hit" : "miss_or_unknown" } : { enabled: false },
+      ...(batch ? { batch } : {}),
+    },
+    parseOutcome: "completed",
+    transport,
+  };
+
+  const decisionsPayload = {
+    meetingIndex: runIndex,
+    sampleSize,
+    round,
+    mode: meetingMode,
+    meetingSize: meetingSize || curators.length,
+    curators,
+    packetSummary: parsed.decisions?.packet_summary || "",
+    keep: filteredKeep,
+    response: {
+      id: responseId,
+      status: response.status || null,
+      incompleteDetails: response.incomplete_details || null,
+      usage,
+      outputTextLength: diagnostics.outputTextLength,
+      promptCacheUsed: Boolean(promptCache?.key),
+      retries: retryCount,
+      ...(batch ? { batch } : {}),
+    },
+    transport,
+  };
+
+  await fs.mkdir(minutesDir, { recursive: true });
+  await fs.mkdir(decisionsDir, { recursive: true });
+  const indexStr = padIndex(runIndex, Math.max(3, String(sampleSize).length));
+  await fs.writeFile(path.join(minutesDir, `meeting-${indexStr}.json`), JSON.stringify(minutesPayload, null, 2));
+  await fs.writeFile(path.join(decisionsDir, `decisions-${indexStr}.json`), JSON.stringify(decisionsPayload, null, 2));
+
+  logInfo(verbose, `Finished meeting ${runIndex} with ${filteredKeep.length} keep decisions (request ${responseId || "n/a"})`);
+  return { minutesPayload, decisionsPayload, usage, responseId, diagnostics };
 }
 
 export async function runMeeting({
@@ -286,83 +415,30 @@ export async function runMeeting({
     }
 
     try {
-      const { parsed, diagnostics } = await parseMeetingResponse({ response, runIndex, errorsDir, maxOutputTokens: activeMaxOutputTokens, reasoningEffort, retryCount: outputBudgetRetries, tokenCountMethod, promptCache });
-      const keepEntries = (parsed.decisions?.keep || []).map((item) => ({
-        path: normalizeRelativePath(item.path),
-        reason: item.reason || "",
-      })).filter((item) => item.path);
-
-      const filteredKeep = [];
-      for (const entry of keepEntries) {
-        const canonical = canonicalizeRelativePath(entry.path);
-        const resolvedPath = fileSet.has(entry.path)
-          ? entry.path
-          : (canonicalFileMap?.get(canonical) || null);
-        if (!resolvedPath) {
-          const matches = findNearestManifestMatches(entry.path, fileSet, canonicalFileMap).join(", ");
-          logWarn(`Meeting ${runIndex} referenced unknown path: ${entry.path}${matches ? ` (nearest: ${matches})` : ""}`);
-          continue;
-        }
-        filteredKeep.push({ ...entry, path: resolvedPath });
-      }
-
-      const usage = response.usage || {};
-      const responseId = response.id || null;
-      const minutesPayload = {
-        meetingIndex: runIndex,
+      const materialized = await materializeMeetingResponse({
+        response,
+        runIndex,
         sampleSize,
         round,
-        mode: meetingMode,
-        meetingSize: meetingSize || curators.length,
+        meetingMode,
+        meetingSize,
         curators,
-        prompt: "[omitted inline]",
-        summary: parsed.summary || "",
-        minutes: parsed.minutes || [],
-        request: {
-          id: responseId,
-          estimatedInputTokens,
-          inputTokens: usage.input_tokens || null,
-          cachedTokens: usage.input_tokens_details?.cached_tokens || null,
-          outputTokens: usage.output_tokens || null,
-          reasoningTokens: usage.output_tokens_details?.reasoning_tokens || null,
-          status: response.status || null,
-          incompleteDetails: response.incomplete_details || null,
-          retries: Math.max(0, attempt - 1) + outputBudgetRetries,
-          timeoutMs: requestTimeoutMs,
-          tokenCountMethod,
-          promptCache: promptCache?.key ? { enabled: true, retention: promptCache.retention || null, status: usage.input_tokens_details?.cached_tokens ? "hit_or_partial_hit" : "miss_or_unknown" } : { enabled: false },
-        },
-        parseOutcome: "completed",
-      };
-
-      const decisionsPayload = {
-        meetingIndex: runIndex,
-        sampleSize,
-        round,
-        mode: meetingMode,
-        meetingSize: meetingSize || curators.length,
-        curators,
-        packetSummary: parsed.decisions?.packet_summary || "",
-        keep: filteredKeep,
-        response: {
-          id: responseId,
-          status: response.status || null,
-          incompleteDetails: response.incomplete_details || null,
-          usage,
-          outputTextLength: diagnostics.outputTextLength,
-          promptCacheUsed: Boolean(promptCache?.key),
-          retries: outputBudgetRetries,
-        },
-      };
-
-      await fs.mkdir(minutesDir, { recursive: true });
-      await fs.mkdir(decisionsDir, { recursive: true });
-      const indexStr = padIndex(runIndex, Math.max(3, String(sampleSize).length));
-      await fs.writeFile(path.join(minutesDir, `meeting-${indexStr}.json`), JSON.stringify(minutesPayload, null, 2));
-      await fs.writeFile(path.join(decisionsDir, `decisions-${indexStr}.json`), JSON.stringify(decisionsPayload, null, 2));
-
-      logInfo(verbose, `Finished meeting ${runIndex} with ${filteredKeep.length} keep decisions (request ${responseId || "n/a"})`);
-      return { minutesPayload, decisionsPayload, usage, responseId, maxOutputTokens: activeMaxOutputTokens, retries: outputBudgetRetries };
+        fileSet,
+        canonicalFileMap,
+        minutesDir,
+        decisionsDir,
+        errorsDir,
+        verbose,
+        reasoningEffort,
+        maxOutputTokens: activeMaxOutputTokens,
+        estimatedInputTokens,
+        requestTimeoutMs,
+        promptCache,
+        tokenCountMethod,
+        retryCount: Math.max(0, attempt - 1) + outputBudgetRetries,
+        transport: "sync",
+      });
+      return { ...materialized, maxOutputTokens: activeMaxOutputTokens, retries: outputBudgetRetries };
     } catch (error) {
       const reason = error?.diagnostics?.incomplete_details?.reason || error?.diagnostics?.incomplete_details?.code || null;
       const nextBudget = reason && /max[_-]?output|max[_-]?tokens?/i.test(reason) ? nextOutputTokenBudget(activeMaxOutputTokens, outputRetryLadder) : null;
