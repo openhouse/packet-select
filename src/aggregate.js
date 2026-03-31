@@ -77,6 +77,14 @@ export async function writeAggregationOutputs({ outDir, votes, frequencyTsv, max
     votesJson: votesPath,
     decisionsFiles: meta.decisionsFiles,
     projectOverviewsDir: meta.projectOverviewsDir || null,
+    executionMode: meta.executionMode || "sync",
+    apiMode: meta.apiMode || (meta.executionMode || "sync"),
+    workersIgnored: Boolean(meta.workersIgnored),
+    batchStateFile: meta.batchStateFile || null,
+    batchShards: meta.batchShards ?? null,
+    batchIds: meta.batchIds ?? null,
+    submittedAt: meta.submittedAt || null,
+    completedAt: meta.completedAt || null,
   };
   await fs.writeFile(path.join(outDir, "run.json"), JSON.stringify(runManifest, null, 2));
 

@@ -170,3 +170,25 @@ Two helper scripts are included:
 - `scripts/crs_build_subtrees.sh`: Materializes `gteNN` subtrees using a frequency TSV.
 
 Both scripts are invoked automatically when present (the subtree builder defaults to `<repo-root>/scripts/crs_build_subtrees.sh`; if missing or not executable, subtree generation is skipped with a warning), but can also be run directly. Ensure the subtree builder is executable (`chmod +x scripts/crs_build_subtrees.sh`) or provide an alternate path via `--build-subtrees-bin`; otherwise, re-run with `--no-build-subtrees` to silence warnings.
+
+## Batch mode (submit + collect)
+
+Submit batch jobs while preserving the same planning/preflight flow:
+
+```bash
+packet-select \
+  --src-root /path/to/project \
+  --prompt-file ./brief.txt \
+  --curators "A,B,C" \
+  --execution-mode batch \
+  --batch-submit-only \
+  --out-dir ./packet-select-out
+```
+
+Collect later (state is persisted under `out-dir/batch/state.json` by default):
+
+```bash
+packet-select \
+  --batch-collect \
+  --batch-state-file ./packet-select-out/batch/state.json
+```
