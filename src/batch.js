@@ -1,6 +1,7 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { createReadStream } from "node:fs";
+import crypto from "node:crypto";
 import { materializeMeetingResponse, buildMeetingInput, buildMeetingRequest } from "./meeting.js";
 import { padIndex } from "./utils.js";
 
@@ -97,6 +98,7 @@ export async function stageBatchRequests({ meetings, sampleSize, buildArgs, limi
     });
     meetingMap[customId] = {
       meetingIndex: meeting.index,
+      attempt: 0,
       round: meeting.round,
       meetingMode: buildArgs.meetingMode,
       meetingSize: meeting.meetingSize,
@@ -104,6 +106,7 @@ export async function stageBatchRequests({ meetings, sampleSize, buildArgs, limi
       estimatedInputTokens: buildArgs.estimatedInputTokens,
       tokenCountMethod: buildArgs.tokenCountMethod,
       requestedMaxOutputTokens: buildArgs.maxOutputTokens,
+      shardIndex: null,
     };
     return buildBatchRequestLine({ customId, payload });
   });
@@ -112,9 +115,17 @@ export async function stageBatchRequests({ meetings, sampleSize, buildArgs, limi
   const shards = shardBatchRequests(lines, limits);
   const files = await writeBatchInputJsonl({ outDir, shards });
 
+  for (let i = 0; i < shards.length; i += 1) {
+    const shardIndex = i + 1;
+    for (const line of shards[i]) {
+      if (meetingMap[line.custom_id]) meetingMap[line.custom_id].shardIndex = shardIndex;
+    }
+  }
+
   const batchDir = path.join(outDir, "batch");
-  await fs.mkdir(batchDir, { recursive: true });
-  const mapPath = path.join(batchDir, "meeting-map.json");
+  const requestsDir = path.join(batchDir, "requests");
+  await fs.mkdir(requestsDir, { recursive: true });
+  const mapPath = path.join(requestsDir, "meeting-map.json");
   await fs.writeFile(mapPath, JSON.stringify(meetingMap, null, 2), "utf8");
 
   return { lines, meetingMap, shards, files, mapPath, totalInputBytes };
@@ -130,19 +141,38 @@ export async function loadBatchState(statePath) {
   return JSON.parse(content);
 }
 
-export async function submitBatchShards({ client, statePath, stagedFiles, model, metadata = {}, dryRun = false }) {
+export function computeConfigHash(value) {
+  return crypto.createHash("sha256").update(JSON.stringify(value)).digest("hex");
+}
+
+export function createInitialBatchState({ stagedFiles, model, metadata = {}, planning = {} }) {
   const now = new Date().toISOString();
-  const baseState = {
-    version: 1,
+  return {
+    version: 2,
     model,
     createdAt: now,
     updatedAt: now,
-    shards: stagedFiles.map((file) => ({ ...file, inputFileId: null, batchId: null, status: "staged", outputFileId: null, errorFileId: null })),
+    submittedAt: null,
+    metadata,
+    ...planning,
+    shards: stagedFiles.map((file) => ({
+      ...file,
+      inputFileId: null,
+      batchId: null,
+      status: "staged",
+      outputFileId: null,
+      errorFileId: null,
+    })),
   };
+}
+
+export async function submitBatchShards({ client, statePath, state, metadata = {}, dryRun = false }) {
+  const baseState = state;
   await writeBatchState({ statePath, state: baseState });
   if (dryRun) return baseState;
 
   for (const shard of baseState.shards) {
+    if (shard.batchId) continue;
     const uploaded = await client.files.create({ file: createReadStream(shard.filePath), purpose: "batch" });
     shard.inputFileId = uploaded.id;
     shard.status = "uploaded";
@@ -221,12 +251,18 @@ export async function reconcileBatchResults({
   requestTimeoutMs,
   promptCache,
   maxOutputTokens,
+  onlyShardIndexes = null,
 }) {
   const successes = new Set();
   const failures = new Set();
+  const pending = new Set();
   await fs.mkdir(errorsDir, { recursive: true });
+  const allowedShards = onlyShardIndexes ? new Set(onlyShardIndexes) : null;
+  const processedShards = new Set();
 
   for (const shard of state.shards) {
+    if (allowedShards && !allowedShards.has(shard.shardIndex)) continue;
+    processedShards.add(shard.shardIndex);
     if (shard.outputPath) {
       const lines = parseBatchOutputJsonl(await fs.readFile(shard.outputPath, "utf8"));
       for (const line of lines) {
@@ -236,6 +272,8 @@ export async function reconcileBatchResults({
         const response = line.response?.body || null;
         if (!response) {
           failures.add(customId);
+          const p = path.join(errorsDir, `meeting-${padIndex(context.meetingIndex, Math.max(3, String(sampleSize).length))}.error.log`);
+          await fs.writeFile(p, `Missing response.body for ${customId}\n`, "utf8");
           continue;
         }
         try {
@@ -294,12 +332,16 @@ export async function reconcileBatchResults({
 
   for (const [customId, context] of Object.entries(meetingMap)) {
     if (successes.has(customId) || failures.has(customId)) continue;
+    if (context.shardIndex != null && !processedShards.has(context.shardIndex)) {
+      pending.add(customId);
+      continue;
+    }
     failures.add(customId);
     const p = path.join(errorsDir, `meeting-${padIndex(context.meetingIndex, Math.max(3, String(sampleSize).length))}.error.log`);
     await fs.writeFile(p, `Missing batch result for ${customId}\n`, "utf8");
   }
 
-  return { successes: successes.size, failures: failures.size, missing: [...failures].filter((id) => !successes.has(id) && !Object.values(state.shards).some((s) => s.errorPath)).length };
+  return { successes: successes.size, failures: failures.size, pending: pending.size, repairsCreated: 0 };
 }
 
 export async function pollBatch({ client, state, statePath, pollIntervalMs, verbose }) {

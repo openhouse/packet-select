@@ -22,3 +22,8 @@ test("batch collect mode can parse without core planning flags", () => {
   assert.equal(cfg.batchCollectOnly, true);
   assert.equal(cfg.executionMode, "batch");
 });
+
+test("loadConfig no longer exposes resumeBatchId", () => {
+  const cfg = loadConfig([...BASE]);
+  assert.equal("resumeBatchId" in cfg, false);
+});

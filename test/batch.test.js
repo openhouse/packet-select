@@ -9,6 +9,7 @@ import {
   shardBatchRequests,
   parseBatchOutputJsonl,
   reconcileBatchResults,
+  stageBatchRequests,
 } from "../src/batch.js";
 import { buildMeetingInput, buildMeetingRequest, extractResponseOutputText } from "../src/meeting.js";
 
@@ -100,4 +101,71 @@ test("reconcileBatchResults handles out-of-order output and error lines idempote
 
   const parsed = parseBatchOutputJsonl(await fs.readFile(outputPath, "utf8"));
   assert.equal(parsed.length, 1);
+});
+
+test("stageBatchRequests writes durable meeting map under batch/requests with shard provenance", async () => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "packet-select-stage-"));
+  const staged = await stageBatchRequests({
+    meetings: [{ index: 1, round: 1, curators: ["A", "B"], meetingSize: 2 }],
+    sampleSize: 1,
+    buildArgs: {
+      promptText: "Choose",
+      overviewText: "Overview",
+      manifestText: '{"path":"src/a.js"}',
+      srcRoot: "/tmp/project",
+      fileCount: 1,
+      meetingMode: "group",
+      model: "gpt-5.4",
+      maxOutputTokens: 4096,
+      reasoningEffort: "high",
+      promptCache: null,
+      estimatedInputTokens: 123,
+      tokenCountMethod: "heuristic",
+    },
+    outDir: dir,
+  });
+  assert.match(staged.mapPath, /batch\/requests\/meeting-map\.json$/);
+  const entry = staged.meetingMap["meeting-001-attempt-0"];
+  assert.equal(entry.shardIndex, 1);
+  assert.equal(entry.attempt, 0);
+});
+
+test("reconcileBatchResults treats non-terminal shard entries as pending, not missing failures", async () => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "packet-select-pending-"));
+  const minutesDir = path.join(dir, "minutes");
+  const decisionsDir = path.join(dir, "decisions");
+  const errorsDir = path.join(dir, "errors");
+  await fs.mkdir(path.join(dir, "batch", "results"), { recursive: true });
+  const outputPath = path.join(dir, "batch", "results", "shard-001.output.jsonl");
+  const okBody = {
+    id: "resp_1",
+    status: "completed",
+    output: [{ content: [{ type: "output_text", text: JSON.stringify({ curators: ["A"], run_index: 1, sample_size: 2, summary: "ok", minutes: [], decisions: { packet_summary: "done", keep: [{ path: "src/a.js", reason: "needed" }] } }) }] }],
+  };
+  await fs.writeFile(outputPath, `${JSON.stringify({ custom_id: "meeting-001-attempt-0", response: { body: okBody } })}\n`);
+  const state = { shards: [{ shardIndex: 1, outputPath }] };
+  const meetingMap = {
+    "meeting-001-attempt-0": { meetingIndex: 1, round: 1, meetingMode: "group", meetingSize: 1, curators: ["A"], requestedMaxOutputTokens: 4096, shardIndex: 1 },
+    "meeting-002-attempt-0": { meetingIndex: 2, round: 1, meetingMode: "group", meetingSize: 1, curators: ["A"], requestedMaxOutputTokens: 4096, shardIndex: 2 },
+  };
+  const result = await reconcileBatchResults({
+    outDir: dir,
+    state,
+    meetingMap,
+    fileSet: new Set(["src/a.js"]),
+    canonicalFileMap: new Map([["srcajs", "src/a.js"]]),
+    minutesDir,
+    decisionsDir,
+    errorsDir,
+    sampleSize: 2,
+    verbose: false,
+    reasoningEffort: "high",
+    requestTimeoutMs: 1000,
+    promptCache: null,
+    maxOutputTokens: 4096,
+    onlyShardIndexes: [1],
+  });
+  assert.equal(result.successes, 1);
+  assert.equal(result.failures, 0);
+  assert.equal(result.pending, 1);
 });
