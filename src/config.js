@@ -49,8 +49,6 @@ export function loadConfig(argv) {
       "batch-submit-only": { type: "boolean" },
       "batch-collect": { type: "boolean" },
       "batch-state-file": { type: "string" },
-      "resume-batch-id": { type: "string" },
-      "batch-id": { type: "string" },
       "batch-poll-interval-ms": { type: "string" },
       "src-root": { type: "string", short: "s" },
       "prompt-file": { type: "string", short: "p" },
@@ -132,7 +130,6 @@ export function loadConfig(argv) {
   const explicitBatchCollect = Boolean(values["batch-collect"]) || values["api-mode"] === "batch-collect";
   const batchWait = Boolean(values["batch-wait"]);
   const batchPollIntervalMs = Number(values["batch-poll-interval-ms"] || 30000);
-  const resumeBatchId = values["resume-batch-id"] || values["batch-id"] || null;
   const executionMode = executionModeRaw === "batch" || explicitBatchCollect ? "batch" : "sync";
   const promptCacheKey = values["prompt-cache-key"] || process.env.PACKET_SELECT_PROMPT_CACHE_KEY || null;
   const promptCacheRetention = values["prompt-cache-retention"] || process.env.PACKET_SELECT_PROMPT_CACHE_RETENTION || null;
@@ -205,7 +202,6 @@ export function loadConfig(argv) {
     batchWait,
     batchPollIntervalMs,
     batchStateFile,
-    resumeBatchId,
     batchCollectOnly: explicitBatchCollect,
   };
 }
@@ -222,5 +218,5 @@ export function usage() {
   [--max-input-tokens <int>] [--max-overview-tokens <int>] [--reserve-output-tokens <int>] [--max-output-tokens <int>] \n\
   [--tpm-limit <int>] [--max-requests-per-minute <int>] [--scheduler-utilization <0-1>] [--request-timeout-ms <int>] [--max-retries <int>] [--dry-run] \n\
   [--prompt-cache-key <string>] [--prompt-cache-retention <ttl>] [--no-prompt-cache] \n\
-  [--execution-mode <sync|batch>] [--batch-submit-only] [--batch-collect] [--resume-batch-id <id>] [--batch-state-file <path>] [--batch-wait] [--batch-poll-interval-ms <ms>]`;
+  [--execution-mode <sync|batch>] [--batch-submit-only] [--batch-collect] [--batch-state-file <path>] [--batch-wait] [--batch-poll-interval-ms <ms>]`;
 }

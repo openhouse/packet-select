@@ -11,6 +11,8 @@ import { listProjectFiles, logInfo, padIndex, ensureTrailingNewline, buildCanoni
 import { runMeeting, buildMeetingInput, estimateRequestTokens, isDeterministicRequestError, isDeterministicIncompleteError } from "../src/meeting.js";
 import {
   stageBatchRequests,
+  createInitialBatchState,
+  computeConfigHash,
   submitBatchShards,
   loadBatchState,
   writeBatchState,
@@ -123,6 +125,89 @@ async function writePreflight({ outDir, overview, preflight, totalMeetings, tpmL
   console.error(text.trim());
 }
 
+async function finalizeRunArtifacts({
+  outDir,
+  srcRoot,
+  model,
+  sdkVersion,
+  sampleSize,
+  totalMeetings,
+  workers,
+  effectiveWorkers,
+  curators,
+  overviewPath,
+  llmOverviewPath,
+  manifestPath,
+  promptPath,
+  fileSet,
+  reasoningEffort,
+  crossPollinate,
+  pairsPerRound,
+  groupsPerRound,
+  meetingSize,
+  maxInputTokens,
+  maxOverviewTokens,
+  maxOutputTokens,
+  reserveOutputTokens,
+  tpmLimit,
+  rpmLimit,
+  schedulerUtilization,
+  requestTimeoutMs,
+  promptCache,
+  tokenCountMethod,
+  fixedRequestTokens,
+  availableOverviewBudget,
+  executionMode,
+  apiMode,
+  workersIgnored,
+  batchStateFile,
+  batchShards,
+  batchIds,
+  submittedAt,
+  completedAt,
+  failedMeetings,
+  noBuildSubtrees,
+  noBucketOverviews,
+  buildSubtreesBin,
+  buildSubtreesBinWasProvided,
+  verbose,
+}) {
+  const decisionsDir = path.join(outDir, "decisions");
+  const { votes, records, maxCount, frequencyTsv, decisionsFiles } = await aggregateDecisions({ decisionsDir, fileSet, sampleSize: totalMeetings });
+  const completedMeetings = decisionsFiles.length;
+  const projectOverviewsDir = !noBuildSubtrees && !noBucketOverviews && maxCount > 0 ? path.join(outDir, "project-overviews") : null;
+  const { frequencyPath } = await writeAggregationOutputs({
+    outDir,
+    votes,
+    frequencyTsv,
+    maxCount,
+    records,
+    meta: {
+      srcRoot, model, openAiSdkVersion: sdkVersion, sampleSize, totalMeetings, workers, effectiveWorkers, curators, overviewPath, llmOverviewPath, manifestPath, promptPath,
+      totalFiles: fileSet.size, decisionsFiles, completedMeetings, failedMeetings, reasoningEffort, crossPollinate, pairsPerRound, groupsPerRound, meetingSize, projectOverviewsDir,
+      maxInputTokens, maxOverviewTokens, maxOutputTokens, reserveOutputTokens, tpmLimit, rpmLimit, schedulerUtilization, requestTimeoutMs,
+      promptCache: promptCache ? { enabled: promptCache.enabled, source: promptCache.source, retention: promptCache.retention, keyLength: promptCache.keyLength } : null,
+      tokenCountMethod, fixedRequestTokens, availableOverviewBudget, executionMode, apiMode, workersIgnored, batchStateFile, batchShards, batchIds, submittedAt, completedAt,
+    },
+  });
+
+  if (!noBuildSubtrees && maxCount > 0 && srcRoot) {
+    const subtreesRoot = await buildSubtrees({ srcRoot, outDir, frequencyPath, buildSubtreesBin, buildSubtreesBinWasProvided, min: 1, max: maxCount, verbose });
+    if (subtreesRoot && !noBucketOverviews) {
+      const overviewScript = overviewPath && overviewPath.endsWith("project-overview.txt")
+        ? path.join(path.dirname(overviewPath), "scripts", "generate-overview.sh")
+        : path.resolve("scripts", "generate-overview.sh");
+      if (await fs.stat(overviewScript).catch(() => null)) {
+        await generateBucketOverviews({ subtreesRoot, overviewScriptPath: overviewScript, verbose, overviewCollectionDir: projectOverviewsDir || path.join(outDir, "project-overviews") });
+      }
+    }
+  } else if (!noBuildSubtrees && !srcRoot) {
+    console.error("packet-select: warning: skipping subtree generation; srcRoot unavailable in collect context");
+  }
+
+  return { completedMeetings };
+}
+
 async function main() {
   let config;
   try {
@@ -142,7 +227,7 @@ async function main() {
     buildSubtreesBin: configuredBuildSubtreesBin, noBuildSubtrees, noBucketOverviews, apiKey, verbose,
     crossPollinate, reasoningEffort, maxInputTokens, maxOverviewTokens, reserveOutputTokens, maxOutputTokens,
     tpmLimit, rpmLimit, requestTimeoutMs, maxRetries, dryRun, schedulerUtilization,
-    executionMode, batchSubmitOnly, batchWait, batchPollIntervalMs, batchStateFile, resumeBatchId, batchCollectOnly,
+    executionMode, batchSubmitOnly, batchWait, batchPollIntervalMs, batchStateFile, batchCollectOnly,
   } = config;
 
   const sdkVersion = getOpenAiSdkVersion();
@@ -153,29 +238,27 @@ async function main() {
 
   if (batchCollectOnly) {
     const client = new OpenAI({ apiKey, timeout: requestTimeoutMs });
-    const resolvedOutDir = path.resolve(outDir);
+    const loadedState = await loadBatchState(batchStateFile);
+    const resolvedOutDir = path.resolve(loadedState.outDir || path.dirname(path.dirname(batchStateFile)));
     const minutesDir = path.join(resolvedOutDir, "minutes");
     const decisionsDir = path.join(resolvedOutDir, "decisions");
     const errorsDir = path.join(resolvedOutDir, "errors");
     await Promise.all([fs.mkdir(minutesDir, { recursive: true }), fs.mkdir(decisionsDir, { recursive: true }), fs.mkdir(errorsDir, { recursive: true })]);
-    const loadedState = await loadBatchState(batchStateFile);
     const state = await refreshBatchState({ client, state: loadedState });
     await writeBatchState({ statePath: batchStateFile, state });
     const activeStatuses = state.shards.filter((s) => isBatchActive(s.status)).map((s) => `${s.shardIndex}:${s.status}`);
-    if (activeStatuses.length > 0) {
-      console.error(`packet-select: batch shards still active (${activeStatuses.join(", ")})`);
-      process.exit(0);
-    }
+    const terminalShardIndexes = state.shards.filter((s) => !isBatchActive(s.status)).map((s) => s.shardIndex);
     await downloadBatchShardOutputs({ client, outDir: resolvedOutDir, state });
     await writeBatchState({ statePath: batchStateFile, state });
-    const effectiveSrcRoot = state.srcRoot;
-    const fileList = await listProjectFiles(effectiveSrcRoot, { excludedRoots: new Set(["batch"]) });
+    const effectiveSrcRoot = state.srcRoot || null;
+    const fileList = state.fileList || (effectiveSrcRoot ? await listProjectFiles(effectiveSrcRoot, { excludedRoots: new Set(["batch"]) }) : []);
     const fileSet = new Set(fileList);
-    const canonicalFileMap = buildCanonicalFileMap(fileList);
+    const canonicalFileMap = state.canonicalFileMapEntries ? new Map(state.canonicalFileMapEntries) : buildCanonicalFileMap(fileList);
+    const meetingMap = state.meetingMapPath ? JSON.parse(await fs.readFile(state.meetingMapPath, "utf8")) : (state.meetingMap || {});
     const reconciliation = await reconcileBatchResults({
       outDir: resolvedOutDir,
       state,
-      meetingMap: state.meetingMap || {},
+      meetingMap,
       fileSet,
       canonicalFileMap,
       minutesDir,
@@ -187,44 +270,24 @@ async function main() {
       requestTimeoutMs,
       promptCache: state.promptCache || null,
       maxOutputTokens: state.maxOutputTokens || maxOutputTokens,
+      onlyShardIndexes: terminalShardIndexes,
     });
-    const { votes, records, maxCount, frequencyTsv, decisionsFiles } = await aggregateDecisions({ decisionsDir, fileSet, sampleSize: state.totalMeetings || sampleSize });
-    const completedMeetings = decisionsFiles.length;
-    const projectOverviewsDir = null;
-    await writeAggregationOutputs({
-      outDir: resolvedOutDir,
-      votes,
-      frequencyTsv,
-      maxCount,
-      records,
-      meta: {
-        srcRoot: effectiveSrcRoot,
-        model: state.model,
-        openAiSdkVersion: sdkVersion,
-        sampleSize: state.sampleSize || sampleSize,
-        totalMeetings: state.totalMeetings || sampleSize,
-        workers,
-        effectiveWorkers: 0,
-        curators: state.curators || [],
-        overviewPath: state.overviewPath || null,
-        promptPath: state.promptPath || null,
-        totalFiles: fileSet.size,
-        decisionsFiles,
-        completedMeetings,
-        failedMeetings: Math.max(0, (state.totalMeetings || sampleSize) - completedMeetings),
-        reasoningEffort: state.reasoningEffort,
-        crossPollinate: state.crossPollinate,
-        pairsPerRound: state.pairsPerRound,
-        groupsPerRound: state.groupsPerRound,
-        meetingSize: state.meetingSize,
-        projectOverviewsDir,
-        apiMode: "batch-collect",
-        executionMode: "batch",
-        batchStateFile,
-        batchShards: state.shards?.length || 0,
-        batchIds: state.shards?.map((s) => s.batchId).filter(Boolean) || [],
-      },
-    });
+    if (activeStatuses.length === 0) {
+      await finalizeRunArtifacts({
+        outDir: resolvedOutDir, srcRoot: effectiveSrcRoot, model: state.model, sdkVersion, sampleSize: state.sampleSize || sampleSize, totalMeetings: state.totalMeetings || sampleSize,
+        workers, effectiveWorkers: 0, curators: state.curators || [], overviewPath: state.overviewPath || null, llmOverviewPath: state.llmOverviewPath || null, manifestPath: state.manifestPath || null, promptPath: state.promptPath || null,
+        fileSet, reasoningEffort: state.reasoningEffort, crossPollinate: state.crossPollinate, pairsPerRound: state.pairsPerRound, groupsPerRound: state.groupsPerRound, meetingSize: state.meetingSize,
+        maxInputTokens: state.maxInputTokens, maxOverviewTokens: state.maxOverviewTokens, maxOutputTokens: state.maxOutputTokens || maxOutputTokens, reserveOutputTokens: state.reserveOutputTokens,
+        tpmLimit: state.tpmLimit, rpmLimit: state.rpmLimit, schedulerUtilization: state.schedulerUtilization, requestTimeoutMs: state.requestTimeoutMs || requestTimeoutMs, promptCache: state.promptCache,
+        tokenCountMethod: state.tokenCountMethod, fixedRequestTokens: state.fixedRequestTokens, availableOverviewBudget: state.availableOverviewBudget,
+        executionMode: "batch", apiMode: "batch-collect", workersIgnored: true, batchStateFile, batchShards: state.shards?.length || 0, batchIds: state.shards?.map((s) => s.batchId).filter(Boolean) || [],
+        submittedAt: state.submittedAt || null, completedAt: new Date().toISOString(), failedMeetings: reconciliation.failures,
+        noBuildSubtrees, noBucketOverviews, buildSubtreesBin, buildSubtreesBinWasProvided, verbose,
+      });
+    } else {
+      console.error(`packet-select: partial collect complete (${reconciliation.successes} successes, ${reconciliation.failures} failures, ${reconciliation.pending} pending); active shards: ${activeStatuses.join(", ")}`);
+      process.exit(reconciliation.failures > 0 ? 1 : 0);
+    }
     console.error(`packet-select: batch collect complete (${reconciliation.successes} successes, ${reconciliation.failures} failures)`);
     process.exit(reconciliation.failures > 0 ? 1 : 0);
   }
@@ -376,30 +439,65 @@ async function main() {
         maxBytesPerShard: 180 * 1024 * 1024,
       },
     });
-    const state = await submitBatchShards({
+    const configHash = computeConfigHash({
+      srcRoot, model, curators, sampleSize: totalMeetings, crossPollinate, meetingSize: plannedMeetingSize, reasoningEffort, maxOutputTokens,
+      promptCache: { key: promptCache?.key || null, source: promptCache?.source || null }, promptText: promptTextResolved, overviewText: refitOverview.overviewText, manifestText: refitOverview.manifestText,
+    });
+    let state;
+    if (await fs.stat(batchStateFile).catch(() => null)) {
+      const existing = await loadBatchState(batchStateFile);
+      if (existing.configHash !== configHash) {
+        throw new Error(`batch state mismatch for ${batchStateFile}; existing configHash ${existing.configHash || "none"} != ${configHash}`);
+      }
+      state = existing;
+    } else {
+      state = createInitialBatchState({
+        stagedFiles: staged.files,
+        model,
+        metadata: { srcRoot, outDir, executionMode, sampleSize: totalMeetings },
+        planning: {
+          configHash,
+          outDir,
+          srcRoot,
+          meetingMapPath: staged.mapPath,
+          totalMeetings,
+          sampleSize,
+          reasoningEffort,
+          maxOutputTokens,
+          promptCache,
+          curators,
+          crossPollinate,
+          meetingSize: plannedMeetingSize,
+          groupsPerRound: crossPollinate ? groupsPerRound : null,
+          pairsPerRound,
+          overviewPath: refitOverview.archivalOverviewPath || "fallback-listing",
+          llmOverviewPath: refitOverview.llmOverviewPath || null,
+          manifestPath: refitOverview.manifestPath || null,
+          promptPath,
+          model,
+          fileList,
+          canonicalFileMapEntries: [...canonicalFileMap.entries()],
+          tokenCountMethod: preflight.method,
+          fixedRequestTokens: scaffoldEstimate.inputTokens,
+          availableOverviewBudget,
+          maxInputTokens,
+          maxOverviewTokens,
+          reserveOutputTokens,
+          tpmLimit,
+          rpmLimit,
+          schedulerUtilization,
+          requestTimeoutMs,
+        },
+      });
+      await writeBatchState({ statePath: batchStateFile, state });
+    }
+    state = await submitBatchShards({
       client,
       statePath: batchStateFile,
-      stagedFiles: staged.files,
-      model,
+      state,
       metadata: { srcRoot, outDir, executionMode, sampleSize: totalMeetings },
       dryRun,
     });
-    state.meetingMap = staged.meetingMap;
-    state.totalMeetings = totalMeetings;
-    state.sampleSize = sampleSize;
-    state.srcRoot = srcRoot;
-    state.model = model;
-    state.maxOutputTokens = maxOutputTokens;
-    state.reasoningEffort = reasoningEffort;
-    state.promptCache = promptCache;
-    state.curators = curators;
-    state.crossPollinate = crossPollinate;
-    state.meetingSize = plannedMeetingSize;
-    state.groupsPerRound = crossPollinate ? groupsPerRound : null;
-    state.pairsPerRound = pairsPerRound;
-    state.overviewPath = refitOverview.archivalOverviewPath || "fallback-listing";
-    state.promptPath = promptPath;
-    state.batchStateFile = batchStateFile;
     state.submittedAt = new Date().toISOString();
     await writeBatchState({ statePath: batchStateFile, state });
 
@@ -409,7 +507,6 @@ async function main() {
     }
 
     console.error(`packet-select: submitted ${state.shards.length} batch shard(s)`);
-    if (resumeBatchId) console.error(`packet-select: --resume-batch-id provided (${resumeBatchId}) but automatic shard mapping from state is used`);
     if (batchSubmitOnly && !batchWait) process.exit(0);
 
     if (batchWait) {
@@ -419,7 +516,7 @@ async function main() {
       const reconciliation = await reconcileBatchResults({
         outDir,
         state,
-        meetingMap: state.meetingMap || {},
+        meetingMap: JSON.parse(await fs.readFile(state.meetingMapPath, "utf8")),
         fileSet,
         canonicalFileMap,
         minutesDir,
@@ -432,7 +529,28 @@ async function main() {
         promptCache,
         maxOutputTokens,
       });
+      const usage = (state.shards || []).reduce((acc, shard) => {
+        const u = shard.usage || {};
+        acc.input_tokens += u.input_tokens || 0;
+        acc.cached_tokens += u.input_tokens_details?.cached_tokens || 0;
+        acc.output_tokens += u.output_tokens || 0;
+        acc.reasoning_tokens += u.output_tokens_details?.reasoning_tokens || 0;
+        acc.total_tokens += u.total_tokens || 0;
+        return acc;
+      }, { input_tokens: 0, cached_tokens: 0, output_tokens: 0, reasoning_tokens: 0, total_tokens: 0 });
+      await finalizeRunArtifacts({
+        outDir, srcRoot, model, sdkVersion, sampleSize, totalMeetings, workers, effectiveWorkers: 0, curators, overviewPath: refitOverview.archivalOverviewPath || "fallback-listing", llmOverviewPath: refitOverview.llmOverviewPath,
+        manifestPath: refitOverview.manifestPath, promptPath, fileSet, reasoningEffort, crossPollinate, pairsPerRound, groupsPerRound: crossPollinate ? groupsPerRound : null, meetingSize: plannedMeetingSize, maxInputTokens,
+        maxOverviewTokens, maxOutputTokens, reserveOutputTokens, tpmLimit, rpmLimit, schedulerUtilization, requestTimeoutMs, promptCache, tokenCountMethod: preflight.method, fixedRequestTokens: scaffoldEstimate.inputTokens,
+        availableOverviewBudget, executionMode: "batch", apiMode: "batch-submit", workersIgnored: true, batchStateFile, batchShards: state.shards.length, batchIds: state.shards.map((s) => s.batchId).filter(Boolean),
+        submittedAt: state.submittedAt, completedAt: new Date().toISOString(), failedMeetings: reconciliation.failures, noBuildSubtrees, noBucketOverviews, buildSubtreesBin, buildSubtreesBinWasProvided, verbose,
+      });
+      const runPath = path.join(outDir, "run.json");
+      const runJson = JSON.parse(await fs.readFile(runPath, "utf8"));
+      runJson.batchUsage = usage;
+      await fs.writeFile(runPath, `${JSON.stringify(runJson, null, 2)}\n`, "utf8");
       console.error(`packet-select: batch wait/collect complete (${reconciliation.successes} successes, ${reconciliation.failures} failures)`);
+      process.exit(reconciliation.failures > 0 ? 1 : 0);
     } else {
       process.exit(0);
     }
@@ -517,72 +635,14 @@ async function main() {
     }
   }
 
-  const { votes, records, maxCount, frequencyTsv, decisionsFiles } = await aggregateDecisions({ decisionsDir, fileSet, sampleSize: totalMeetings });
-  const completedMeetings = decisionsFiles.length;
-  const projectOverviewsDir = !noBuildSubtrees && !noBucketOverviews && maxCount > 0 ? path.join(outDir, "project-overviews") : null;
-  const { frequencyPath } = await writeAggregationOutputs({
-    outDir,
-    votes,
-    frequencyTsv,
-    maxCount,
-    records,
-    meta: {
-      srcRoot,
-      model,
-      openAiSdkVersion: sdkVersion,
-      sampleSize,
-      totalMeetings,
-      workers,
-      effectiveWorkers: workerCount,
-      curators,
-      overviewPath: refitOverview.archivalOverviewPath || "fallback-listing",
-      llmOverviewPath: refitOverview.llmOverviewPath,
-      manifestPath: refitOverview.manifestPath,
-      promptPath,
-      totalFiles: fileSet.size,
-      decisionsFiles,
-      completedMeetings,
-      failedMeetings: errors,
-      reasoningEffort,
-      crossPollinate,
-      pairsPerRound,
-      groupsPerRound: crossPollinate ? groupsPerRound : null,
-      meetingSize: plannedMeetingSize,
-      projectOverviewsDir,
-      maxInputTokens,
-      maxOverviewTokens,
-      maxOutputTokens,
-      reserveOutputTokens,
-      tpmLimit,
-      rpmLimit,
-      schedulerUtilization,
-      requestTimeoutMs,
-      promptCache: { enabled: promptCache.enabled, source: promptCache.source, retention: promptCache.retention, keyLength: promptCache.keyLength },
-      tokenCountMethod: preflight.method,
-      fixedRequestTokens: scaffoldEstimate.inputTokens,
-      availableOverviewBudget,
-      executionMode,
-      apiMode: executionMode === "batch" ? "batch-submit" : "sync",
-      workersIgnored: executionMode === "batch",
-      batchStateFile: executionMode === "batch" ? batchStateFile : null,
-      batchShards: executionMode === "batch" ? undefined : null,
-    },
+  const { completedMeetings } = await finalizeRunArtifacts({
+    outDir, srcRoot, model, sdkVersion, sampleSize, totalMeetings, workers, effectiveWorkers: workerCount, curators, overviewPath: refitOverview.archivalOverviewPath || "fallback-listing", llmOverviewPath: refitOverview.llmOverviewPath,
+    manifestPath: refitOverview.manifestPath, promptPath, fileSet, reasoningEffort, crossPollinate, pairsPerRound, groupsPerRound: crossPollinate ? groupsPerRound : null, meetingSize: plannedMeetingSize,
+    maxInputTokens, maxOverviewTokens, maxOutputTokens, reserveOutputTokens, tpmLimit, rpmLimit, schedulerUtilization, requestTimeoutMs, promptCache,
+    tokenCountMethod: preflight.method, fixedRequestTokens: scaffoldEstimate.inputTokens, availableOverviewBudget, executionMode, apiMode: executionMode === "batch" ? "batch-submit" : "sync",
+    workersIgnored: executionMode === "batch", batchStateFile: executionMode === "batch" ? batchStateFile : null, batchShards: executionMode === "batch" ? undefined : null, batchIds: null,
+    submittedAt: null, completedAt: new Date().toISOString(), failedMeetings: errors, noBuildSubtrees, noBucketOverviews, buildSubtreesBin, buildSubtreesBinWasProvided, verbose,
   });
-
-  if (!noBuildSubtrees && maxCount > 0) {
-    const subtreesRoot = await buildSubtrees({ srcRoot, outDir, frequencyPath, buildSubtreesBin, buildSubtreesBinWasProvided, min: 1, max: maxCount, verbose });
-    if (subtreesRoot && !noBucketOverviews) {
-      const overviewScript = refitOverview.archivalOverviewPath && refitOverview.archivalOverviewPath.endsWith("project-overview.txt")
-        ? path.join(path.dirname(refitOverview.archivalOverviewPath), "scripts", "generate-overview.sh")
-        : path.resolve("scripts", "generate-overview.sh");
-      if (await fs.stat(overviewScript).catch(() => null)) {
-        const overviewCollectionDir = projectOverviewsDir || path.join(outDir, "project-overviews");
-        await generateBucketOverviews({ subtreesRoot, overviewScriptPath: overviewScript, verbose, overviewCollectionDir });
-      } else {
-        logInfo(verbose, "No generate-overview.sh found to run inside buckets");
-      }
-    }
-  }
 
   if (errors > 0) console.error(`packet-select: complete with ${completedMeetings}/${totalMeetings} meetings succeeded (${errors} failed)`);
   else console.error(`packet-select: complete (${completedMeetings}/${totalMeetings} meetings succeeded)`);
